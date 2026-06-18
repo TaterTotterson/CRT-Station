@@ -111,7 +111,6 @@ However, if you already have Raspberry Pi OS set up and working on your TV then 
     disable_fw_kms_setup=1
     disable_splash=1
     disable_overscan=1
-    dtparam=audio=on
 
     # HDMI
     display_auto_detect=1
