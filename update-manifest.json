@@ -1,13 +1,13 @@
 {
-  "version": "2026.06.20.18",
+  "version": "2026.06.20.19",
   "channel": "main",
   "repo": "https://github.com/TaterTotterson/240-MP-Emby-Jelly",
   "manifest_url": "https://raw.githubusercontent.com/TaterTotterson/240-MP-Emby-Jelly/main/update-manifest.json",
-  "binary_archive": "https://github.com/TaterTotterson/240-MP-Emby-Jelly/releases/download/v2026.06.20.18/240-MP-v2026.06.20.18-linux-arm64.tar.gz",
-  "source_archive": "https://github.com/TaterTotterson/240-MP-Emby-Jelly/archive/refs/tags/v2026.06.20.18.tar.gz",
+  "binary_archive": "https://github.com/TaterTotterson/240-MP-Emby-Jelly/releases/download/v2026.06.20.19/240-MP-v2026.06.20.19-linux-arm64.tar.gz",
+  "source_archive": "https://github.com/TaterTotterson/240-MP-Emby-Jelly/archive/refs/tags/v2026.06.20.19.tar.gz",
   "notes": [
-    "Adds CRT static while surfing Over The Air channels and waits briefly before opening the selected stream.",
-    "Lets OK tune the highlighted Over The Air channel immediately while UP/DOWN keep browsing through channels.",
-    "Forces Over The Air playback through a lower 480p-style H.264/AAC transcode path for composite CRT use."
+    "Fixes packaged updater script permissions so built-in updates can restart cleanly.",
+    "Runs the transient updater through bash so updates survive script permission drift.",
+    "Keeps the Over The Air static channel surfing and lower CRT-friendly Live TV transcode behavior from 2026.06.20.18."
   ]
 }

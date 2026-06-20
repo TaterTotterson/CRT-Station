@@ -100,8 +100,13 @@ if(APPLE)
         "${CMAKE_SOURCE_DIR}/views"
         "${CMAKE_SOURCE_DIR}/modules"
         "${CMAKE_SOURCE_DIR}/assets"
+        DESTINATION "240mp.app/Contents/Resources"
+        COMPONENT Runtime)
+
+    install(DIRECTORY
         "${CMAKE_SOURCE_DIR}/scripts"
         DESTINATION "240mp.app/Contents/Resources"
+        USE_SOURCE_PERMISSIONS
         COMPONENT Runtime)
 
     # macdeployqt is NOT run here — it requires Qt frameworks to be present and
@@ -121,8 +126,13 @@ else()
         "${CMAKE_SOURCE_DIR}/views"
         "${CMAKE_SOURCE_DIR}/modules"
         "${CMAKE_SOURCE_DIR}/assets"
+        DESTINATION "${CMAKE_INSTALL_DATADIR}/240mp"
+        COMPONENT Runtime)
+
+    install(DIRECTORY
         "${CMAKE_SOURCE_DIR}/scripts"
         DESTINATION "${CMAKE_INSTALL_DATADIR}/240mp"
+        USE_SOURCE_PERMISSIONS
         COMPONENT Runtime)
 endif()
 
