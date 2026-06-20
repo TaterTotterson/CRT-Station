@@ -22,8 +22,6 @@ FocusScope {
     property bool tuningStaticVisible: true
     property bool stoppingForTune: false
     property bool streamRequestActive: false
-    property bool pendingForceTranscode: false
-    property bool currentForceTranscode: false
     property int tuneDelayMs: 1200
 
     focus: true
@@ -45,10 +43,6 @@ FocusScope {
         return "CHANNEL"
     }
 
-    function forceTranscodeEnabled() {
-        return true
-    }
-
     function selectedChannel() {
         if (currentIndex < 0 || currentIndex >= channels.length) return null
         return channels[currentIndex]
@@ -62,7 +56,6 @@ FocusScope {
         streamRequestActive = false
         statusText = channelLabel(channel)
         pendingChannelId = channel.id
-        pendingForceTranscode = forceTranscodeEnabled()
 
         if (mpvController.running) {
             stoppingForTune = true
@@ -76,11 +69,10 @@ FocusScope {
 
         tuneTimer.stop()
         pendingChannelId = channel.id
-        pendingForceTranscode = forceTranscodeEnabled()
         streamRequestActive = true
         statusText = "TUNING " + channelLabel(channel)
         appCore.save_setting(moduleId, "last_channel_id", channel.id)
-        embyBackend.request_live_tv_stream(channel.id, newSessionId(), pendingForceTranscode)
+        embyBackend.request_live_tv_stream(channel.id, newSessionId(), false)
     }
 
     function tuneIndex(index, immediate) {
@@ -180,7 +172,6 @@ FocusScope {
             hasStartedPlayback = true
             tuningStaticVisible = false
             streamRequestActive = false
-            currentForceTranscode = pendingForceTranscode
             mpvController.loadAndPlay(url, 0.0, 0, -1, [], false, -1, 0.0,
                                       httpHeaderFields, false, "ota", false, label)
         }
@@ -205,14 +196,6 @@ FocusScope {
         function onPlaybackFailed() {
             if (stoppingForTune) {
                 stoppingForTune = false
-                return
-            }
-            if (!currentForceTranscode && pendingChannelId !== "") {
-                statusText = "RETRYING TRANSCODE"
-                pendingForceTranscode = true
-                tuningStaticVisible = true
-                streamRequestActive = true
-                embyBackend.request_live_tv_stream(pendingChannelId, newSessionId(), true)
                 return
             }
             statusText = "OTA PLAYBACK FAILED"

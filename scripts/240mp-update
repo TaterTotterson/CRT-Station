@@ -18,7 +18,13 @@ cleanup() {
     if [ -n "$SELF_COPY" ]; then
         rm -f "$SELF_COPY"
     fi
-    rm -f "$UPDATE_FLAG"
+    # The initial updater process is launched by 240-MP, so it lives inside
+    # 240mp.service and is killed when the app stops. Only the detached
+    # transient updater may clear the flag; otherwise 240mp-stop sees a normal
+    # service stop as a crash and starts the terminal login over the update.
+    if [ "${MP240_UPDATE_TRANSIENT:-0}" = "1" ]; then
+        rm -f "$UPDATE_FLAG"
+    fi
 
     if [ "$SERVICE_STOPPED" = "1" ] && [ "$status" -ne 0 ]; then
         systemctl start "$SERVICE_NAME" >/dev/null 2>&1 || true

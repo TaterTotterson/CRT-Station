@@ -381,12 +381,17 @@ pi240_show_update_splash() {
 
     if ! plymouth --ping >/dev/null 2>&1; then
         if command -v plymouthd >/dev/null 2>&1; then
-            pi240_root plymouthd --mode=boot --attach-to-session >/dev/null 2>&1 || true
+            pi240_root plymouthd \
+                --mode=boot \
+                --tty=/dev/tty1 \
+                --attach-to-session \
+                --graphical-boot \
+                >/dev/null 2>&1 || true
         fi
     fi
 
     pi240_root plymouth --show-splash >/dev/null 2>&1 || true
-    pi240_root plymouth message --text="240MP_UPDATE" >/dev/null 2>&1 || true
+    pi240_root plymouth display-message --text="240MP_UPDATE" >/dev/null 2>&1 || true
 }
 
 pi240_install_launcher() {
@@ -777,6 +782,9 @@ pi240_install_file_from_stdin /usr/local/bin/240mp-stop 0755 <<'STOP_HELPER'
 #!/usr/bin/env bash
 # Called by 240mp.service ExecStopPost. systemd sets $EXIT_STATUS to the app's exit code.
 if [ -e /run/240mp-updating ]; then
+    exit 0
+fi
+if systemctl list-units --no-legend --type=service --state=activating,running '240mp-update-*.service' 2>/dev/null | grep -q '^240mp-update-'; then
     exit 0
 fi
 
