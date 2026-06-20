@@ -18,7 +18,7 @@ if [ "${PI240_IMAGE_PROFILE:-}" = "crt-ntsc" ]; then
     pi240_force_composite_video
 fi
 if [ "${PI240_ENABLE_IR:-1}" = "1" ]; then
-    pi240_install_ir_support "${PI240_IR_PROTOCOL:-nec}" /etc/rc_keymaps/240mp.toml "${PI240_IR_GPIO_PIN:-17}"
+    pi240_install_ir_support "${PI240_IR_PROTOCOL:-nec}" /etc/rc_keymaps/240mp.toml "${PI240_IR_GPIO_PIN:-23}"
 fi
 if [ "${PI240_ENABLE_BOOT_SPLASH:-1}" = "1" ]; then
     pi240_install_boot_splash

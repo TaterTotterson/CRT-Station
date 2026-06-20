@@ -1,11 +1,12 @@
 {
-  "version": "2026.06.20.9",
+  "version": "2026.06.20.10",
   "channel": "main",
   "repo": "https://github.com/TaterTotterson/240-MP-Emby-Jelly",
   "manifest_url": "https://raw.githubusercontent.com/TaterTotterson/240-MP-Emby-Jelly/main/update-manifest.json",
-  "binary_archive": "https://github.com/TaterTotterson/240-MP-Emby-Jelly/releases/download/v2026.06.20.9/240-MP-v2026.06.20.9-linux-arm64.tar.gz",
-  "source_archive": "https://github.com/TaterTotterson/240-MP-Emby-Jelly/archive/refs/tags/v2026.06.20.9.tar.gz",
+  "binary_archive": "https://github.com/TaterTotterson/240-MP-Emby-Jelly/releases/download/v2026.06.20.10/240-MP-v2026.06.20.10-linux-arm64.tar.gz",
+  "source_archive": "https://github.com/TaterTotterson/240-MP-Emby-Jelly/archive/refs/tags/v2026.06.20.10.tar.gz",
   "notes": [
-    "Routes Raspberry Pi EGLFS remote/gamepad actions through QML even when Qt reports the kiosk window as inactive."
+    "Switches the default GPIO IR receiver pin to GPIO23 for Argon Raspberry Pi cases.",
+    "Adds Argon40 IR remote NEC scancodes to the built-in keymap and updates older default keymaps automatically."
   ]
 }

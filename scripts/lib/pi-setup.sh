@@ -175,7 +175,7 @@ pi240_auto_force_composite_video() {
 }
 
 pi240_enable_ir_overlay() {
-    local gpio_pin="${1:-17}"
+    local gpio_pin="${1:-23}"
     local config_txt
     config_txt="$(pi240_boot_config_path)"
 
@@ -183,6 +183,11 @@ pi240_enable_ir_overlay() {
     pi240_root touch "$config_txt"
 
     if pi240_root grep -Eq '^[[:space:]]*dtoverlay=gpio-ir([,[:space:]]|$)' "$config_txt"; then
+        if pi240_is_root; then
+            sed -i -E "s|^[[:space:]]*dtoverlay=gpio-ir.*$|dtoverlay=gpio-ir,gpio_pin=${gpio_pin}|" "$config_txt"
+        else
+            sudo sed -i -E "s|^[[:space:]]*dtoverlay=gpio-ir.*$|dtoverlay=gpio-ir,gpio_pin=${gpio_pin}|" "$config_txt"
+        fi
         return 0
     fi
 
@@ -420,7 +425,7 @@ pi240_install_ir_support() {
     local protocol="${1:-nec}"
     local keymap="${2:-/etc/rc_keymaps/240mp.toml}"
     local default_keymap="/etc/rc_keymaps/240mp-default.toml"
-    local gpio_pin="${3:-17}"
+    local gpio_pin="${3:-23}"
 
     pi240_install_file_from_stdin /etc/default/240mp-ir 0644 <<IR_DEFAULTS
 MP240_IR_PROTOCOL=${protocol}
@@ -430,11 +435,23 @@ IR_DEFAULTS
 
     pi240_install_file_from_stdin "$default_keymap" 0644 <<'KEYMAP'
 [[protocols]]
-name = "240mp-nec-mini"
+name = "240mp-nec-remotes"
 protocol = "nec"
 variant = "nec"
 
 [protocols.scancodes]
+# Argon40 IR Remote for Argon Raspberry Pi cases.
+0xca = "KEY_UP"
+0xd2 = "KEY_DOWN"
+0x99 = "KEY_LEFT"
+0xc1 = "KEY_RIGHT"
+0xce = "KEY_OK"
+0xcb = "KEY_HOME"
+0x90 = "KEY_BACK"
+0x9d = "KEY_MENU"
+0x80 = "KEY_VOLUMEUP"
+0x81 = "KEY_VOLUMEDOWN"
+
 # Common 21-key NEC mini remote, short scancodes.
 0x45 = "KEY_POWER"
 0x46 = "KEY_MENU"
@@ -478,7 +495,7 @@ variant = "nec"
 0x00ff4a = "KEY_NUMERIC_9"
 KEYMAP
 
-    if [ ! -f "$keymap" ]; then
+    if [ ! -f "$keymap" ] || pi240_root grep -q 'name = "240mp-nec-mini"' "$keymap"; then
         pi240_root install -D -m 0644 "$default_keymap" "$keymap"
     fi
 

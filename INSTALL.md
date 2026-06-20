@@ -73,7 +73,7 @@ Useful image build options:
 | `PI_ENABLE_SSH` | `1` | Enable SSH in the image; set to `0` to build with SSH off |
 | `PI_PUBKEY_ONLY_SSH` | `0` | Disable SSH password auth when set to `1` and `PI_FIRST_USER_PUBKEY` is set |
 | `PI_ENABLE_IR` | `1` | Enable GPIO IR receiver support in the image |
-| `PI_IR_GPIO_PIN` | `17` | GPIO pin used by the IR receiver data line |
+| `PI_IR_GPIO_PIN` | `23` | GPIO pin used by the IR receiver data line |
 | `PI_IR_PROTOCOL` | `nec` | IR protocol loaded by `ir-keytable` |
 | `PI_ENABLE_BOOT_SPLASH` | `1` | Hide boot text behind the 240-MP Plymouth splash |
 
@@ -81,7 +81,7 @@ Set `PI_FIRST_USER_PASS` to a stronger password before building if this image wi
 
 ### GPIO IR Remote
 
-The ready-to-flash image enables a GPIO IR receiver by default on GPIO17 and loads a starter NEC keymap for the common small 21-key remotes. Wire the receiver data pin to GPIO17, plus 3.3V and ground, then boot the Pi.
+The ready-to-flash image enables a GPIO IR receiver by default on GPIO23 (physical pin 16), matching Argon Raspberry Pi cases, and loads a starter NEC keymap for the Argon40 remote plus the common small 21-key remotes. For loose receivers, wire the data pin to GPIO23, plus 3.3V and ground, then boot the Pi.
 
 If your remote uses different scancodes, log in on the Pi and run:
 
