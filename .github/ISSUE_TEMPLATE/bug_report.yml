@@ -6,7 +6,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        Thanks for taking the time to file a bug. Most issues here are environment-specific, so the more detail on your hardware and setup, the faster it can be sorted out.
+        Thanks for taking the time to file a bug. This fork targets Raspberry Pi 4 composite output to a CRT, Argon IR remote input, and Emby/Jellyfin playback.
   - type: checkboxes
     id: preflight
     attributes:
@@ -35,9 +35,6 @@ body:
       label: Platform
       options:
         - Raspberry Pi 4
-        - Raspberry Pi 3B+
-        - Raspberry Pi 3B
-        - Other Raspberry Pi model
         - Local development machine
     validations:
       required: true
@@ -45,12 +42,9 @@ body:
     id: display
     attributes:
       label: Display & output
-      description: Overscan and config.txt differences are common culprits, so this helps a lot.
+      description: The supported image target is composite output to a CRT.
       options:
         - CRT via composite (NTSC)
-        - CRT via composite (PAL)
-        - HDMI (TV / monitor)
-        - Other
     validations:
       required: true
   - type: dropdown

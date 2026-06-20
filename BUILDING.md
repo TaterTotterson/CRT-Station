@@ -1,89 +1,47 @@
 # Building 240-MP
 
-Most users should use the ready-to-flash Raspberry Pi image from the latest GitHub release. It is built for this Emby/Jellyfin fork and defaults to CRT/composite output, GPIO IR remote support, SSH debugging, and booting straight into 240-MP.
+Most users should use the ready-to-flash Raspberry Pi image from the latest GitHub release.
 
-If you want to customize the image, change the app, or do local development, this page covers the build setup. Raspberry Pi OS arm64 is the real target. macOS on Apple Silicon is kept as a quick local testing path for development only; release builds are Linux arm64 for Raspberry Pi.
+This fork is built around one production target: Raspberry Pi 4, composite video to a CRT, Argon IR remote support, and Emby/Jellyfin playback. There is no Plex support.
 
-## macOS (ARM, local testing only)
+Use this page when you want to customize the image, change the app, or do local development.
 
-The macOS build is useful for quick UI and backend checks while developing. It is not packaged, signed, notarized, or published by the release workflow.
+## macOS Local Testing
 
-### Prerequisites (one-time)
+The macOS build is only for quick UI and backend checks while developing. It is not a release target.
 
-**Set up Build tools:**
-
-```bash
-brew install cmake
-```
-
-**Install Qt 6.*:**
-
-- Download from [qt.io/download](https://qt.io/download) or `brew install qt@6`.
-- Install to `~/Qt/`
-
-**Install mpv (required for playback):**
+### Prerequisites
 
 ```bash
-brew install mpv
+brew install cmake mpv sdl2 qt@6
 ```
 
-Note: 240-MP uses mpv as an external subprocess for video playback. It does not link against libmpv at build time, so mpv only needs to be on your `PATH` when running the app.
-
-**Install SDL2 (required, gamepad input):**
-
-```bash
-brew install sdl2
-```
-
-SDL2 is a build-time dependency — `InputManager` links against it for USB game controller support (see [Gamepad input](#gamepad-input-inputcfg)).
-
-### Get the source
-
-```bash
-git clone https://github.com/TaterTotterson/240-MP-Emby-Jelly.git
-cd 240-MP-Emby-Jelly
-```
+If Qt is installed somewhere custom, pass that path through `CMAKE_PREFIX_PATH`.
 
 ### Build
 
-**First time, and after any CMakeLists.txt changes:**
-
 ```bash
-cmake -B build -DCMAKE_PREFIX_PATH=~/Qt/6.11.0/macos . && cmake --build build
-```
-
-**For incremental builds:**
-
-```bash
-cmake --build build
+cmake -B build-macos-test -DCMAKE_PREFIX_PATH="$(brew --prefix qt@6)" .
+cmake --build build-macos-test --parallel
 ```
 
 ### Run
 
-You can either double-click `build/240mp.app` in Finder, or run from the terminal:
-
 ```bash
-APP_ROOT=$(pwd) ./build/240mp.app/Contents/MacOS/240mp
+APP_ROOT=$(pwd) ./build-macos-test/240mp.app/Contents/MacOS/240mp
 ```
 
-### Configuration
+macOS settings are stored in:
 
-On macOS all user configuration is stored at:
-
-```
+```text
 ~/Library/Application Support/240-MP/
-  config.json                 ← app and module settings
-  emby_jellyfin_auth.json     ← local Emby/Jellyfin auth
-  input.cfg                   ← optional gamepad mapping overrides (see Gamepad input below)
 ```
 
-This directory is created automatically on first run. It is separate from the app itself, so deleting or rebuilding the app will not wipe your settings.
+## Raspberry Pi 4 Development Build
 
-## Raspberry Pi OS (arm64)
+The release image is the normal install path. Build directly on a Pi only when you are debugging or developing.
 
-### Prerequisites (one-time)
-
-Run on the Pi with RPi OS Trixie (Debian 13):
+Install dependencies on Raspberry Pi OS Trixie arm64:
 
 ```bash
 sudo apt-get update
@@ -92,137 +50,70 @@ sudo apt-get install -y \
   qt6-base-dev qt6-declarative-dev \
   qml6-module-qtquick qml6-module-qtquick-controls \
   qml6-module-qtquick-window \
-  libqt6svg6 qt6-svg-dev qt6-svg-plugins qt6-wayland \
+  libqt6svg6 qt6-svg-dev qt6-svg-plugins \
   libdrm-dev libxkbcommon-dev \
   libsdl2-dev \
   mpv
 ```
 
-`mpv` is the playback engine — 240-MP launches it as a subprocess. No libmpv build dependency is required.
-
-### Get the source
-
-```bash
-git clone https://github.com/TaterTotterson/240-MP-Emby-Jelly.git
-cd 240-MP-Emby-Jelly
-```
-
-### Build
-
-**First time, and after any CMakeLists.txt changes:**
+Build:
 
 ```bash
 cmake -B build
+cmake --build build --parallel
 ```
 
-**For incremental builds:**
-
-```bash
-cmake --build build
-```
-
-No `CMAKE_PREFIX_PATH` needed — Qt 6 from apt is found automatically.
-
-### Run
-
-**With a desktop** (RPi OS Full with a display server):
-
-```bash
-APP_ROOT=$(pwd) ./build/240mp
-```
-
-**Without a Desktop** (RPi OS Lite with no display server):
+Run on Raspberry Pi OS Lite/EGLFS:
 
 ```bash
 APP_ROOT=$(pwd) QT_QPA_PLATFORM=eglfs ./build/240mp
 ```
 
-`eglfs` uses the KMS/DRM framebuffer directly without X11 or Wayland.
+Pi settings are stored in:
 
-### Configuration
-
-On Raspberry Pi OS all user configuration is stored at:
-
-```
+```text
 ~/.local/share/240-MP/
-  config.json                 ← app and module settings
-  emby_jellyfin_auth.json     ← local Emby/Jellyfin auth
-  input.cfg                   ← optional gamepad mapping overrides (see Gamepad input below)
 ```
 
-This directory is created automatically on first run. It is separate from the app itself, so deleting or rebuilding the app will not wipe your settings.
+## Build A Custom Pi Image
 
-## Raspberry Pi appliance image
+The image builder wraps Raspberry Pi's `pi-gen` arm64 branch, builds 240-MP inside the rootfs, installs it under `/opt/240mp`, enables `240mp.service`, enables the boot screen, and applies the CRT/composite NTSC + Argon IR defaults.
 
-To build a ready-to-flash Raspberry Pi OS Lite image with 240-MP already installed and enabled on boot, use:
+Requirements on your build machine:
+
+- Docker
+- Git
+- Enough free disk space for a Raspberry Pi OS image build
+
+Build the default Raspberry Pi 4 composite/Argon IR image:
 
 ```bash
 ./scripts/build-pi-image.sh
 ```
 
-The image builder wraps Raspberry Pi's `pi-gen` arm64 branch, adds a custom `stage240mp`, builds the app inside the Pi rootfs, installs it under `/opt/240mp`, enables `240mp.service`, and defaults to the CRT/composite NTSC profile for the 3.5mm output.
-
-For HDMI output:
+Build with a stronger login password:
 
 ```bash
-PI_IMAGE_PROFILE=hdmi ./scripts/build-pi-image.sh
+PI_FIRST_USER_PASS='change-this-password' ./scripts/build-pi-image.sh
 ```
 
-Output images are written to `.cache/pi-gen-arm64/deploy/`. The default login is `tater` / `pi`; see [INSTALL.md](INSTALL.md#option-2-build-a-custom-image) for all supported image variables.
+Build with your SSH public key:
 
-## Gamepad input (input.cfg)
-
-USB game controllers should work out of the box as SDL's built-in controller database normalizes most pads (Xbox, PlayStation, 8BitDo, NES-style clones etc...) to a standard layout. 240-MP maps that stanard layout to its navigation actions:
-
-| Controller input | Action |
-|---|---|
-| D-pad / left stick | navigate (up / down / left / right) |
-| A | select |
-| B/Select | back |
-| Start | play / pause |
-| LB / RB shoulder buttons | left / right (seek during playback) |
-
-Controllers can be hotplugged at any time and during playback the same buttons drive mpv (seek, pause, quit) exactly like their keyboard equivalents.
-
-**Overriding the mapping**
-
-- Create an `input.cfg` file in the configuration directory. 
-- Add one binding per line, `<input> <action>`; 
-- Use `#` to start a comment, data is case-insensitive and you only need to include the things you want to change (anything not defined will fall back to defaults) 
-- The file is also live-reloaded while the app runs, so you can tune bindings without restarting.
-
-Inputs use SDL controller names — short (`a`, `b`, `x`, `y`, `back`, `start`, `leftshoulder`, `rightshoulder`, `dpup`, `dpdown`, `dpleft`, `dpright`, ...) or the long `SDL_CONTROLLER_BUTTON_*` forms. Analog axes take a `+`/`-` direction suffix (`lefty-`, `triggerright+`). Actions: `up`, `down`, `left`, `right`, `select`, `back`, `play_pause`, and `none` to unbind a default.
-
-**Button names are positional**, following an Xbox reference layout: `a` means the *south* face button, `b` east, `x` west, `y` north, no matter what's "printed" on the buttons on your pad. Because of that you can also write the positions directly: `south`, `east`, `west`, `north`. So `south select` makes the bottom face button select on an Xbox pad, an 8BitDo, and a PlayStation pad alike.
-
-**Footer labels** will attempt to adapt automatically and the on-screen hints show what's printed on the controller you touched last (Nintendo-type pads show B at south, PlayStation pads show X/O/SQ/TR). If your controller reports the wrong type (which is common for pads with Nintendo-style labels running in X-input mode) you can define the label you see with a `label` line in the input.cfg
-
-```
-# input.cfg — example overrides
-south                    select       # positions: south/east/west/north
-SDL_CONTROLLER_BUTTON_A  select       # long names work
-b                        back         # so do SDL short names ("b" = east)
-x                        play_pause
-rightshoulder            none         # unbind a default
-lefty-                   up           # axes take a +/- suffix
-triggerright+            play_pause
-label south B                         # force the footer label to display "B" for the south button
-label east  A                         # force the footer label to display "B" for the east button
+```bash
+PI_FIRST_USER_PUBKEY=~/.ssh/id_ed25519.pub ./scripts/build-pi-image.sh
 ```
 
-Any bad lines are skipped with a warning in the log (line number included)
+Output images are written to:
 
-**Exotic controllers** — if SDL doesn't recognize your pad at all, drop a community [gamecontrollerdb.txt](https://github.com/mdqinc/SDL_GameControllerDB) into the configuration directory; it will be loaded at startup before controllers are opened.
+```text
+.cache/pi-gen-arm64/deploy/
+```
 
-## Video decode tuning (mpv_video_args)
+## Playback Tuning
 
-240-MP detects your device at startup and attempts to launch with the most efficient video-output and hardware-decode flags for it. Currently the Pi 3 uses a low-CPU overlay path, the Pi 4 a hardware-decode + copy path, the Pi 5 the V3D Vulkan path, and macOS VideoToolbox. The exact flags and the reasoning per board are in [ARCHITECTURE.md → Per-device video decode profiles](ARCHITECTURE.md#per-device-video-decode-profiles).
+The release image defaults to Pi 4 composite playback. The app launches `mpv` as a subprocess and chooses Pi 4-safe video and audio flags automatically.
 
-**Overriding the decode flags**
-
-If you find the need to tune for your hardware, you can add an `mpv_video_args` string under `"app"` in `config.json`.  It accepts a a space-separated list of mpv flags to replace the auto-detected `--vo` / `--hwdec` params that 240-MP sets.
-
-On custom audio setups, `mpv_audio_args` can be added beside it to override the auto-detected audio output flags. CRT/composite Pi images default to the analog `Headphones` ALSA card when it is present.
+If you need to override mpv video output for debugging, add `mpv_video_args` under `"app"` in `config.json`:
 
 ```json
 {
@@ -232,106 +123,69 @@ On custom audio setups, `mpv_audio_args` can be added beside it to override the 
 }
 ```
 
-This config is read at each playback event, so a change applies on the next playback (no rebuild or restart needed). Only set video-output/decode flags here though; the app owns the rest (the IPC control channel, OSC, input) and for other mpv preferences (things like deinterlace, cache, subtitle styling...) please just create a standard `~/.config/mpv/mpv.conf`. MPV will read that automatically every launch. Please check out [ARCHITECTURE.md → How mpv flags are layered](ARCHITECTURE.md#how-mpv-flags-are-layered-the-precedence-cascade) if you are interested in the background on this approach.
+For custom audio setups, `mpv_audio_args` can be added beside it. The default composite image uses the Pi analog `Headphones` ALSA card when present.
 
-**Enabling crop on a Pi 3** — the Pi 3 default uses a zero-copy overlay path for performance, and a hardware overlay plane can't zoom/crop, so the OSC crop button blanks the video there. To allow crop to work on the Pi3 you can override to the copy path (so frames go through the scaler, where crop works):
+## Debugging
 
-```json
-"mpv_video_args": "--vo=drm --hwdec=v4l2m2m-copy"
-```
+### Service Logs
 
-The trade-off with this approach: the copy path didn't look like it could reliabilty play back 1080p on the Pi 3 in my testing. I found it can easily peg the CPU and cause stuttering. So enabling crop on a Pi 3 means keeping your source content to **720p and below**. Ultimately its your call: smooth 1080p without crop (keep the default), or enable crop with a 720p ceiling using --hwdec=v4l2m2m-copy.
-
-## Debugging & logs
-
-240-MP logs to **stdout/stderr** via Qt's `qDebug` / `qWarning` (used throughout `AppCore`, `MpvController`, and the module backends). The trick is knowing where that output goes depending on how you launched the app.
-
-### Option 1: Running from source
-
-Just run the binary in a terminal and the logs will print right there:
+The ready-to-flash image runs 240-MP through `240mp.service`.
 
 ```bash
-# macOS
-APP_ROOT=$(pwd) ./build/240mp.app/Contents/MacOS/240mp
-
-# Raspberry Pi
-APP_ROOT=$(pwd) ./build/240mp                         # with a desktop
-APP_ROOT=$(pwd) QT_QPA_PLATFORM=eglfs ./build/240mp   # headless / Lite
+journalctl -u 240mp -b
+journalctl -u 240mp -f
 ```
 
-### Option 2: Raspberry Pi installed via `install.sh`
+### Recovery Console
 
-How you read logs depends on whether you installed the autostart service:
+The image leaves `tty2` available as a recovery console. Press `Ctrl+Alt+F2`, log in, and inspect logs from there.
 
-- **Run it by hand** — type `240mp` over SSH and logs print to that terminal. Use this while debugging. (Note: the launcher does **not** power off on exit, unlike the service.)
-- **Via the systemd service** — the service sends output to the journal, so:
-    ```bash
-    journalctl -u 240mp -b        # logs from this boot
-    journalctl -u 240mp -f        # follow live
-    ```
-    Heads-up: the autostart service runs `ExecStopPost=240mp-stop`, which **powers the Pi off when you quit** (exit 0) — the console disappears with it. To debug without powering off, either pick **Exit to Terminal** in the Quit dialog (drops to a login shell on `tty1` without removing the service — `sudo systemctl start 240mp` or `sudo reboot` to return to the service), or stop the service and run the binary directly:
-    ```bash
-    sudo systemctl stop 240mp
-    240mp
-    ```
-    Ready-to-flash images also leave `tty2` available as a recovery console; press `Ctrl+Alt+F2`, log in, and inspect `journalctl -u 240mp -b`.
-
-Ready-to-flash images enable SSH by default for debugging. The Settings screen includes an `SSH Access` row that toggles `ssh.service` through `/usr/local/sbin/240mp-ssh-control`; set `PI_ENABLE_SSH=0` when building if you want SSH off on first boot.
-
-### mpv playback logs
-
-During playback the app hands off to mpv as a subprocess (see [ARCHITECTURE.md → Playback Hand-off](ARCHITECTURE.md#playback-hand-off-mpvcontroller)). `MpvController` writes mpv's own output to a log file in the temp dir alongside its IPC socket (`/tmp/240mp-mpv.sock`) — useful when a video won't play or transcoding misbehaves.
-
-### Qt / QML debugging knobs
-
-These environment variables help when the UI itself is misbehaving:
+To return to the app:
 
 ```bash
-QT_LOGGING_RULES="qt.qml.*=true"   # verbose QML engine logging
-QML_IMPORT_TRACE=1                 # trace QML import resolution (missing modules/components)
-QT_QPA_EGLFS_DEBUG=1               # EGLFS/DRM detail on Raspberry Pi headless
+sudo systemctl start 240mp
 ```
 
-Set them inline, e.g. `QML_IMPORT_TRACE=1 APP_ROOT=$(pwd) ./build/240mp`.
+### Run By Hand
 
-## GitHub Actions
-
-### How to trigger a build
-
-Releases are built automatically when you push a version tag:
+For debugging without the service:
 
 ```bash
-git tag v2026.06.04
-git push origin v2026.06.04
+sudo systemctl stop 240mp
+240mp
 ```
 
-And you can use pre-release tags to test CI without making a public release:
+### mpv Logs
+
+During playback, mpv writes its own log beside the IPC socket:
+
+```text
+/tmp/240mp-mpv.log
+/tmp/240mp-mpv.sock
+```
+
+### Qt / QML Debugging
 
 ```bash
-git tag v1.0.0-rc1
-git push origin v1.0.0-rc1
+QT_LOGGING_RULES="qt.qml.*=true"
+QML_IMPORT_TRACE=1
+QT_QPA_EGLFS_DEBUG=1
 ```
 
-Tags containing `-rc`, `-beta`, or `-alpha` are published as GitHub pre-releases.
+## GitHub Actions Releases
 
-### What the workflow does
+Releases are built from version tags:
 
-The release workflow builds one artifact:
+```bash
+git tag v2026.06.20.13
+git push origin v2026.06.20.13
+```
 
-| Job | Runner | Output |
-|---|---|---|
-| `build-linux-arm64` | `ubuntu-24.04-arm` (native arm64) | `240-MP-<tag>-linux-arm64.tar.gz` |
+The release workflow builds and publishes:
 
-Linux arm64 job: installs Qt from apt, builds, and packages the install tree as `.tar.gz`. mpv and SDL2 are not bundled; the Raspberry Pi installer installs runtime dependencies as part of its dependency list.
+- Linux arm64 app update tarball
+- Ready-to-flash Raspberry Pi image
+- Image checksum
+- Installer script
 
-A final `release` job waits for the Linux build, then creates a GitHub Release with the tarball and `install.sh` attached.
-
-### Output
-
-**While the workflow is running:**
-
-Go to **Actions** → select the workflow run → each build job has an **Artifacts** section at the bottom where you can download that job's output before the release is published.
-
-**After the workflow completes:**
-
-Go to the repository on GitHub → **Releases** → select the release for the tag you set. The Linux arm64 tarball and installer are listed under Assets.
+The ready-to-flash image is the primary release artifact.

@@ -1,6 +1,6 @@
 # 240-MP Architecture
 
-240-MP is a retro VCR-style media app built with **C++ Qt6 + QML**, targeting **Raspberry Pi 4 / Raspberry Pi OS arm64** as the production platform. The macOS path exists for quick local development and smoke testing. This is the reference for working on 240-MP's code, whether you're adding a new module or changing an existing one.
+240-MP is a retro VCR-style Emby/Jellyfin media app built with **C++ Qt6 + QML**, targeting **Raspberry Pi 4 / Raspberry Pi OS arm64 / composite CRT output** as the production platform. The macOS path exists for quick local development and smoke testing. This is the reference for working on 240-MP's code, whether you're changing the app shell or the Emby/Jellyfin module.
 
 If you just want to install or build the app, see [INSTALL.md](INSTALL.md) and [BUILDING.md](BUILDING.md). 
 
@@ -177,16 +177,13 @@ The current MPV implementation is a good reference implementation of the "browse
 3. **State back to QML** — `MpvController` issues `observe_property` for `time-pos`, `duration`, and `playlist-pos`, and re-publishes them as `Q_PROPERTY`s + the `positionChanged` / `durationChanged` / `playlistPosChanged` signals. A watchdog timer logs a warning if no `time-pos` event arrives for ~10 s (freeze detection).
 4. **Exit** — when mpv quits, `MpvController` emits **`playbackFinished(finalPos, finalDur)`** on a normal exit (used to record resume position), or **`playbackFailed()`** when mpv exits with code 2 (file couldn't be played) — `Player.qml` listens for this to retry with transcoding.
 
-### Per-device video decode profiles
+### Raspberry Pi 4 Video Decode Profile
 
-The `--vo`/`--hwdec` flags mpv launches with are auto-selected per device to try to target hardware-decodes efficiently per device without the need for user setup. `MpvController::detectVideoProfile()` reads `/proc/device-tree/model` once at startup; `appendVideoArgs()` then picks the flag set:
+The release image is tuned for Raspberry Pi 4 composite output. `MpvController::detectVideoProfile()` reads `/proc/device-tree/model` once at startup; `appendVideoArgs()` then selects the Pi 4 playback path:
 
 | Target | Boot driver | Video flags |
 |---|---|---|
 | Pi 4B | Fake KMS (`vc4-fkms-v3d`) | `--vo=drm --hwdec=v4l2m2m-copy` |
-| Pi 3B / 3B+ | Fake KMS (`vc4-fkms-v3d`) | `--vo=gpu --gpu-context=drm --hwdec=v4l2m2m` |
-| Pi 5 | Full KMS (`vc4-kms-v3d`) | `--vo=drm --hwdec=auto-safe` |
-| Unknown headless Linux | — | `--vo=drm --hwdec=auto-safe` (a safe fallback for now - will research this more later) |
 | macOS (Apple Silicon) | — | `--hwdec=videotoolbox` |
 
 The key levers are which decoder and which DRM plane the frames land on:
@@ -194,12 +191,7 @@ The key levers are which decoder and which DRM plane the frames land on:
 - **Pi 4** 
     - H264 - in my testing I found that the Pi4 has the CPU headroom to implement `-copy` + software-downscale cost (~50–70% across four cores) in exchange for the primary-plane path with working crop (`--panscan`), so it uses native `--vo=drm` + hardware decode.
     - HEVC — `v4l2m2m-copy` doesn't look like it can reach the Pi4's HEVC decoder from my testing (rpivid is a stateless V4L2-request device, not the stateful `hevc_v4l2m2m` wrapper that mpv tries), so it falls back cleanly. It's seems to work fine for 1080p (~50% CPU) but 4K HEVC does not look feasbile with my current set up so I am accepting that as a limitation for now considering my primary target is a CRT TV. 
-    - I tried a bunch of other paths just to be safe... `auto`/`auto-copy` excludes `v4l2m2m` entirely (so they'd drop H.264 to software too), the Pi5's Vulkan path is unavailable here (the Pi4's V3D 4.2 GPU looks ot lack `VK_KHR_video_decode_queue`), and the only door to rpivid (`--hwdec=drm`) is non-copy → overlay plane which causes judder and it wouldn't help H.264. So that's why I settled on `v4l2m2m-copy` as the current compromise.
-- **Pi 3**
-    - H264 - the copy path I am using on the pi4 sadly pegs all four cores and goes choppy on the pi3. So I chose to take lowest-CPU path with zero-copy (e.g. `v4l2m2m` straight to the overlay plane).  
-    - That gives around ~15% CPU, smooth playback, with the single trade-off that crop (`--panscan`) is unavailable with this set up.  I figured that was an acceptable tradeoff for supporting 1080p video but if you want to retain the ability to crop on a pi3 then you can use the override args to set v4l2m2m-copy which will allow crop to work but limit performance to 720p content instead.
-- **Pi 5** 
-    - boots Full KMS, so plain `--vo=drm` direct-renders. when testing `auto-safe` I found no working VA-API/V4L2 path (the V3D VA-API driver fails to open) and it selects FFmpeg's Vulkan video decoder (`vulkan-copy`) on the V3D GPU for both H264 and HEVC. HEVC reaches the Pi5's hardware HEVC block this way — ~15% for 1080p, ~45% for 4K; H.264 goes through the same Vulkan path and stays light (~20–27% for 1080p). Because it's a `-copy` decoder the frames land on the primary draw plane, so I found this path is smooth and supports crop.
+    - I tried a bunch of other paths just to be safe... `auto`/`auto-copy` excludes `v4l2m2m` entirely (so they'd drop H.264 to software too), and the only door to rpivid (`--hwdec=drm`) is non-copy → overlay plane which causes judder and it wouldn't help H.264. So that's why I settled on `v4l2m2m-copy` as the current compromise.
 
 Advanced users can override the auto-detected flags with the app-level `mpv_video_args` setting in `config.json` (a space-separated flag string under `"app"`); it is read at each launch, so changes apply on the next playback without a rebuild — useful for on-hardware tuning.
 
@@ -434,7 +426,7 @@ FocusScope {
 - List views also declare `property var navListState: navParams.navListState || ({})` and restore position in `Component.onCompleted`.
 - `navigateTo` always takes 3 args: `(path, params, listState)` — pass `{ currentIndex: listView.currentIndex }` as listState when pushing to a detail view.
 - Leaf views only need `signal goBack()` — no `navigateTo`.
-- Use `root.sh` / `root.sw` for all margins and sizes — never hardcoded pixels. This keeps layouts responsive across CRT (240p/480i, watch overscan) and HDMI/LCD.
+- Use `root.sh` / `root.sw` for all margins and sizes — never hardcoded pixels. This keeps layouts readable on the composite CRT target and helps with overscan.
 - Access shared state via `moduleRoot.moduleName`, `moduleRoot.moduleIcon`.
 - Navigate via signals — never call router functions directly.
 
