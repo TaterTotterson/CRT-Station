@@ -79,6 +79,40 @@ Useful image build options:
 
 Set `PI_FIRST_USER_PASS` to a stronger password before building if this image will leave your lab or home network.
 
+### Local Control API
+
+240-MP starts a small HTTP playback-control API with the app. By default it listens on all network interfaces at port `24024`, which makes the ready-to-flash image reachable from another device on your LAN:
+
+```bash
+curl http://240mp.local:24024/api/v1/status
+```
+
+Useful endpoints:
+
+```text
+GET  /api/v1/status
+POST /api/v1/player/play-pause
+POST /api/v1/player/pause
+POST /api/v1/player/resume
+POST /api/v1/player/stop
+POST /api/v1/player/seek          {"position_ms": 60000} or {"offset_ms": 30000}
+POST /api/v1/player/skip-forward  {"offset_ms": 30000}
+POST /api/v1/player/skip-back     {"offset_ms": -10000}
+POST /api/v1/player/volume-up
+POST /api/v1/player/volume-down
+POST /api/v1/player/mute
+POST /api/v1/player/key           {"key": "LEFT", "repeat": 1}
+```
+
+Optional runtime environment variables:
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `MP240_API_ENABLED` | `1` | Set to `0` to disable the API |
+| `MP240_API_HOST` | `0.0.0.0` | Bind address; use `127.0.0.1` for local-only |
+| `MP240_API_PORT` | `24024` | HTTP port |
+| `MP240_API_TOKEN` | unset | If set, callers must send `Authorization: Bearer <token>` or `X-240MP-Token: <token>` |
+
 ### GPIO IR Remote
 
 The ready-to-flash image enables a GPIO IR receiver by default on GPIO23 (physical pin 16), matching Argon Raspberry Pi cases, and loads a starter NEC keymap for the Argon40 remote plus the common small 21-key remotes. For loose receivers, wire the data pin to GPIO23, plus 3.3V and ground, then boot the Pi.

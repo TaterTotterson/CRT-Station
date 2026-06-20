@@ -29,6 +29,7 @@ add_executable(240mp
     src/modules/ambient_mode/AmbientModeBackend.cpp
     src/player/MpvController.cpp
     src/input/InputManager.cpp
+    src/api/ControlApiServer.cpp
     $<$<BOOL:${APPLE}>:src/macos_utils.mm>
 )
 

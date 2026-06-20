@@ -73,6 +73,7 @@ MpvController::MpvController(const QString &appRoot, AppCore *appCore, QObject *
         sendCommand({"observe_property", 1, "time-pos"});
         sendCommand({"observe_property", 2, "duration"});
         sendCommand({"observe_property", 3, "playlist-pos"});
+        sendCommand({"observe_property", 4, "pause"});
     });
     connect(m_ipc, &QLocalSocket::readyRead, this, &MpvController::onIpcReadyRead);
 
@@ -122,6 +123,10 @@ void MpvController::loadAndPlay(const QString &url, float startSeconds,
     m_position    = 0;
     m_duration    = 0;
     m_playlistPos = -1;
+    if (m_paused) {
+        m_paused = false;
+        emit pausedChanged(m_paused);
+    }
     m_lastEndFileReason.clear();
 
 #ifdef Q_OS_MACOS
@@ -210,6 +215,9 @@ void MpvController::loadAndPlay(const QString &url, float startSeconds,
 
     m_process = new QProcess(this);
     m_process->setProcessChannelMode(QProcess::MergedChannels);
+    connect(m_process, &QProcess::started, this, [this]() {
+        emit runningChanged(true);
+    });
     connect(m_process,
             QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished),
             this, &MpvController::onProcessFinished);
@@ -338,6 +346,18 @@ void MpvController::sendKey(const QString &key) {
     sendCommand({"keypress", key});
 }
 
+void MpvController::setPaused(bool paused) {
+    sendCommand({"set_property", "pause", paused});
+}
+
+void MpvController::togglePause() {
+    sendCommand({"cycle", "pause"});
+}
+
+bool MpvController::isRunning() const {
+    return m_process && m_process->state() != QProcess::NotRunning;
+}
+
 void MpvController::tryConnectIpc() {
     if (m_ipc->state() == QLocalSocket::ConnectedState ||
         m_ipc->state() == QLocalSocket::ConnectingState)
@@ -377,6 +397,12 @@ void MpvController::onIpcReadyRead() {
         } else if (name == "playlist-pos") {
             m_playlistPos = int(val);
             emit playlistPosChanged(m_playlistPos);
+        } else if (name == "pause") {
+            const bool paused = data.toBool();
+            if (m_paused != paused) {
+                m_paused = paused;
+                emit pausedChanged(m_paused);
+            }
         }
     }
 }
@@ -405,6 +431,11 @@ void MpvController::onProcessFinished() {
     const int dur = m_duration;
     m_position = 0;
     m_duration = 0;
+    if (m_paused) {
+        m_paused = false;
+        emit pausedChanged(m_paused);
+    }
+    emit runningChanged(false);
 
     // mpv reports reason "eof" only when the file played to its natural end.
     // Any other reason (quit/stop/error) or a missing end-file event (crash/kill)

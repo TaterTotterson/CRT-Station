@@ -57,6 +57,7 @@ Watch on YouTube: https://youtu.be/r-gylGDoELY
 - Keyboard, USB remote, and controller input support
 - Settings toggle for SSH access on ready-to-flash Pi images
 - Media Keys during video playback (volume +/-, mute, play/pause, stop, seek, next chapter, previous chapter)
+- Local HTTP playback-control API for companion apps and voice-assistant bridges
 
 ## Install 
 - [Ready-to-flash Raspberry Pi image](INSTALL.md#option-1-build-a-ready-to-flash-appliance-image)

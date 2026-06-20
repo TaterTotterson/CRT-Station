@@ -16,6 +16,7 @@
 #include "modules/ambient_mode/AmbientModeBackend.h"
 #include "player/MpvController.h"
 #include "input/InputManager.h"
+#include "api/ControlApiServer.h"
 #ifdef Q_OS_MAC
 #include "macos_utils.h"
 #endif
@@ -50,7 +51,7 @@ static QString resolveDataRoot() {
 int main(int argc, char *argv[]) {
     QGuiApplication app(argc, argv);
     app.setApplicationName("240-MP");
-    app.setApplicationVersion("2026.06.20.10");
+    app.setApplicationVersion("2026.06.20.11");
 
     // Hide cursor — 240-MP is keyboard-only so the cursor serves no purpose.
     // On Linux, only hide on headless EGLFS (not desktop X11/Wayland sessions).
@@ -81,6 +82,9 @@ int main(int argc, char *argv[]) {
     AmbientModeBackend  ambientMode(dataRoot);
     MpvController       mpvController(appRoot, &appCore);
     InputManager        inputManager(dataRoot);
+    ControlApiServer    controlApi(&mpvController);
+
+    controlApi.startFromEnvironment();
 
     // When the Qt window is inactive (fullscreen mpv has OS focus on macOS),
     // gamepad actions bypass QML and drive mpv directly over IPC.

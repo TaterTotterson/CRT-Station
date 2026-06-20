@@ -28,6 +28,8 @@ class MpvController : public QObject {
     Q_PROPERTY(int position    READ position    NOTIFY positionChanged)
     Q_PROPERTY(int duration    READ duration    NOTIFY durationChanged)
     Q_PROPERTY(int playlistPos READ playlistPos NOTIFY playlistPosChanged)
+    Q_PROPERTY(bool running    READ isRunning   NOTIFY runningChanged)
+    Q_PROPERTY(bool paused     READ paused      NOTIFY pausedChanged)
 
 public:
     explicit MpvController(const QString &appRoot, AppCore *appCore = nullptr,
@@ -37,6 +39,8 @@ public:
     int position()    const { return m_position;    }
     int duration()    const { return m_duration;    }
     int playlistPos() const { return m_playlistPos; }
+    bool isRunning() const;
+    bool paused() const { return m_paused; }
 
     Q_INVOKABLE void loadAndPlay(const QString &url, float startSeconds,
                                   int audioTrack, int subTrack,
@@ -51,11 +55,15 @@ public:
     Q_INVOKABLE void stop();
     Q_INVOKABLE void seekTo(int positionMs);
     Q_INVOKABLE void sendKey(const QString &key);
+    Q_INVOKABLE void setPaused(bool paused);
+    Q_INVOKABLE void togglePause();
 
 signals:
     void positionChanged(int ms);
     void durationChanged(int ms);
     void playlistPosChanged(int pos);
+    void runningChanged(bool running);
+    void pausedChanged(bool paused);
     // Emitted when mpv exits because the user quit/stopped playback before the end.
     void playbackFinished(int finalPositionMs, int finalDurationMs);
     // Emitted when mpv exits because the file played to its natural end (mpv's
@@ -108,6 +116,7 @@ private:
     int           m_position     = 0;
     int           m_duration     = 0;
     int           m_playlistPos  = -1;
+    bool          m_paused       = false;
     bool          m_headlessMode = false;
     int           m_previousVt   = -1;
     int           m_qtDrmFd      = -1;
