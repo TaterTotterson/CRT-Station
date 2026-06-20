@@ -17,6 +17,7 @@
 
 static const QString kModuleId = QStringLiteral("com.240mp.emby_jellyfin");
 static const QString kAuthFile = QStringLiteral("/emby_jellyfin_auth.json");
+static const QString kOtaVideoQuality = QStringLiteral("480p");
 
 namespace {
 struct PlaybackLimits {
@@ -728,8 +729,10 @@ QString EmbyJellyfinBackend::httpHeaderFieldsFor(const QJsonObject &mediaSource)
     return fields.join(",");
 }
 
-QJsonObject EmbyJellyfinBackend::playbackDeviceProfile(bool forceTranscode) const {
-    const PlaybackLimits limits = playbackLimitsFor(videoQuality(), forceTranscode);
+QJsonObject EmbyJellyfinBackend::playbackDeviceProfile(bool forceTranscode,
+                                                       const QString &quality) const {
+    const QString effectiveQuality = quality.isEmpty() ? videoQuality() : quality;
+    const PlaybackLimits limits = playbackLimitsFor(effectiveQuality, forceTranscode);
 
     QJsonArray directPlayProfiles;
     if (!forceTranscode) {
@@ -776,8 +779,10 @@ QJsonObject EmbyJellyfinBackend::playbackInfoPayload(const QString &partKey,
                                                      const QString &audioId,
                                                      const QString &subtitleId,
                                                      int offsetMs,
-                                                     bool forceTranscode) const {
-    const PlaybackLimits limits = playbackLimitsFor(videoQuality(), forceTranscode);
+                                                     bool forceTranscode,
+                                                     const QString &quality) const {
+    const QString effectiveQuality = quality.isEmpty() ? videoQuality() : quality;
+    const PlaybackLimits limits = playbackLimitsFor(effectiveQuality, forceTranscode);
     QJsonObject body{
         {"UserId", userId()},
         {"StartTimeTicks", static_cast<double>(msToTicks(offsetMs))},
@@ -789,7 +794,7 @@ QJsonObject EmbyJellyfinBackend::playbackInfoPayload(const QString &partKey,
         {"EnableTranscoding", true},
         {"AllowVideoStreamCopy", !forceTranscode},
         {"AllowAudioStreamCopy", !forceTranscode},
-        {"DeviceProfile", playbackDeviceProfile(forceTranscode)}
+        {"DeviceProfile", playbackDeviceProfile(forceTranscode, effectiveQuality)}
     };
 
     if (!partKey.isEmpty())
@@ -822,7 +827,8 @@ QString EmbyJellyfinBackend::playbackUrlFromInfo(const QJsonObject &info,
                                                  const QString &audioId,
                                                  const QString &subtitleId,
                                                  bool forceTranscode,
-                                                 QJsonObject *selectedSource) const {
+                                                 QJsonObject *selectedSource,
+                                                 const QString &quality) const {
     const QJsonArray sources = info["MediaSources"].toArray();
     if (sources.isEmpty()) return {};
 
@@ -858,7 +864,7 @@ QString EmbyJellyfinBackend::playbackUrlFromInfo(const QJsonObject &info,
     if (forceTranscode) {
         qWarning("[EmbyJellyfinBackend] PlaybackInfo did not include TranscodingUrl; using legacy HLS URL fallback");
         return streamUrlFor(ratingKey, mediaSourceId, playSessionId,
-                            audioId, subtitleId, true);
+                            audioId, subtitleId, true, quality);
     }
 
     return streamUrlFor(ratingKey, mediaSourceId, playSessionId);
@@ -869,7 +875,8 @@ QString EmbyJellyfinBackend::streamUrlFor(const QString &itemId,
                                           const QString &playSessionId,
                                           const QString &audioIndex,
                                           const QString &subtitleIndex,
-                                          bool transcode) const {
+                                          bool transcode,
+                                          const QString &quality) const {
     QUrl url = transcode
         ? apiUrl("/Videos/" + itemId + "/master.m3u8")
         : apiUrl("/Videos/" + itemId + "/stream");
@@ -897,15 +904,15 @@ QString EmbyJellyfinBackend::streamUrlFor(const QString &itemId,
         q.addQueryItem("MaxAudioChannels", "2");
         q.addQueryItem("AudioBitRate", "128000");
 
-        QString quality = videoQuality();
+        const QString effectiveQuality = quality.isEmpty() ? videoQuality() : quality;
         int maxWidth = 854;
         int maxHeight = 480;
         int videoBitRate = 2000000;
-        if (quality == "1080p") {
+        if (effectiveQuality == "1080p") {
             maxWidth = 1920;
             maxHeight = 1080;
             videoBitRate = 8000000;
-        } else if (quality == "720p") {
+        } else if (effectiveQuality == "720p") {
             maxWidth = 1280;
             maxHeight = 720;
             videoBitRate = 4000000;
@@ -1057,12 +1064,14 @@ void EmbyJellyfinBackend::request_live_tv_stream(const QString &channelId,
         return;
     }
 
-    QJsonObject payload = playbackInfoPayload({}, {}, {}, 0, forceTranscode);
+    const QString liveTvQuality = forceTranscode ? kOtaVideoQuality : QString{};
+    QJsonObject payload = playbackInfoPayload({}, {}, {}, 0,
+                                              forceTranscode, liveTvQuality);
     auto *reply = apiPostJson(apiUrl("/Items/" + channelId + "/PlaybackInfo"),
                               QJsonDocument(payload).toJson(QJsonDocument::Compact));
 
     connect(reply, &QNetworkReply::finished, this,
-            [this, reply, channelId, sessionId, forceTranscode]() {
+            [this, reply, channelId, sessionId, forceTranscode, liveTvQuality]() {
         reply->deleteLater();
         const QByteArray bytes = reply->readAll();
         if (reply->error() != QNetworkReply::NoError) {
@@ -1090,7 +1099,8 @@ void EmbyJellyfinBackend::request_live_tv_stream(const QString &channelId,
 
         QJsonObject mediaSource;
         const QString url = playbackUrlFromInfo(info, channelId, {}, sessionId,
-                                                {}, {}, forceTranscode, &mediaSource);
+                                                {}, {}, forceTranscode, &mediaSource,
+                                                liveTvQuality);
         if (url.isEmpty()) {
             emit errorOccurred("OTA PLAYBACK FAILED: NO PLAYABLE STREAM");
             return;

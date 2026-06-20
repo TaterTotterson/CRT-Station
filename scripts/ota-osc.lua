@@ -70,7 +70,13 @@ local function tune_relative(delta)
     mp.commandv("script-message", "240mp-ota-channel-step", tostring(delta))
 end
 
+local function tune_now()
+    mp.commandv("script-message", "240mp-ota-tune-now")
+end
+
 mp.add_forced_key_binding("UP", "ota-channel-up", function() tune_relative(1) end)
 mp.add_forced_key_binding("DOWN", "ota-channel-down", function() tune_relative(-1) end)
+mp.add_forced_key_binding("ENTER", "ota-tune-enter", tune_now)
+mp.add_forced_key_binding("KP_ENTER", "ota-tune-kp-enter", tune_now)
 mp.add_key_binding("ESC", "ota-esc", function() mp.command("quit") end)
 mp.add_key_binding("BS", "ota-bs", function() mp.command("quit") end)

@@ -19,8 +19,12 @@ FocusScope {
     property string serverName: ""
     property bool leaving: false
     property bool hasStartedPlayback: false
+    property bool tuningStaticVisible: true
+    property bool stoppingForTune: false
+    property bool streamRequestActive: false
     property bool pendingForceTranscode: false
     property bool currentForceTranscode: false
+    property int tuneDelayMs: 1200
 
     focus: true
 
@@ -42,11 +46,44 @@ FocusScope {
     }
 
     function forceTranscodeEnabled() {
-        var quality = appCore.get_setting("com.240mp.emby_jellyfin", "video_quality") || "auto"
-        return quality !== "auto"
+        return true
     }
 
-    function tuneIndex(index) {
+    function selectedChannel() {
+        if (currentIndex < 0 || currentIndex >= channels.length) return null
+        return channels[currentIndex]
+    }
+
+    function showStaticForChannel(channel) {
+        if (!channel || !channel.id) return
+
+        tuningStaticVisible = true
+        hasStartedPlayback = false
+        streamRequestActive = false
+        statusText = channelLabel(channel)
+        pendingChannelId = channel.id
+        pendingForceTranscode = forceTranscodeEnabled()
+
+        if (mpvController.running) {
+            stoppingForTune = true
+            mpvController.stop()
+        }
+    }
+
+    function requestSelectedStream() {
+        var channel = selectedChannel()
+        if (!channel || !channel.id) return
+
+        tuneTimer.stop()
+        pendingChannelId = channel.id
+        pendingForceTranscode = forceTranscodeEnabled()
+        streamRequestActive = true
+        statusText = "TUNING " + channelLabel(channel)
+        appCore.save_setting(moduleId, "last_channel_id", channel.id)
+        embyBackend.request_live_tv_stream(channel.id, newSessionId(), pendingForceTranscode)
+    }
+
+    function tuneIndex(index, immediate) {
         if (channels.length === 0) return
         if (index < 0) index = channels.length - 1
         if (index >= channels.length) index = 0
@@ -55,31 +92,38 @@ FocusScope {
         var channel = channels[currentIndex]
         if (!channel || !channel.id) return
 
-        pendingChannelId = channel.id
-        statusText = "TUNING " + channelLabel(channel)
-        pendingForceTranscode = forceTranscodeEnabled()
-        mpvController.sendScriptMessage("240mp-ota-channel", statusText)
-        appCore.save_setting(moduleId, "last_channel_id", channel.id)
-        embyBackend.request_live_tv_stream(channel.id, newSessionId(), pendingForceTranscode)
+        showStaticForChannel(channel)
+        if (immediate) {
+            requestSelectedStream()
+        } else {
+            tuneTimer.restart()
+        }
     }
 
-    function tuneRelative(delta) {
+    function tuneRelative(delta, immediate) {
         if (channels.length === 0) return
-        tuneIndex(currentIndex + delta)
+        tuneIndex(currentIndex + delta, !!immediate)
+    }
+
+    function tuneNow() {
+        if (channels.length === 0) return
+        if (tuningStaticVisible || tuneTimer.running || streamRequestActive)
+            requestSelectedStream()
     }
 
     function exitOta() {
         leaving = true
+        tuneTimer.stop()
         mpvController.stop()
         goBack()
     }
 
     Keys.onPressed: function(event) {
         if (event.key === Qt.Key_Up) {
-            tuneRelative(1)
+            tuneRelative(1, false)
             event.accepted = true
         } else if (event.key === Qt.Key_Down) {
-            tuneRelative(-1)
+            tuneRelative(-1, false)
             event.accepted = true
         } else if (event.key === Qt.Key_Escape || event.key === Qt.Key_Backspace || event.key === Qt.Key_Back) {
             exitOta()
@@ -94,9 +138,16 @@ FocusScope {
             mpvController.sendKey("RIGHT")
             event.accepted = true
         } else if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
-            mpvController.sendKey("ENTER")
+            tuneNow()
             event.accepted = true
         }
+    }
+
+    Timer {
+        id: tuneTimer
+        interval: otaRoot.tuneDelayMs
+        repeat: false
+        onTriggered: otaRoot.requestSelectedStream()
     }
 
     Connections {
@@ -117,7 +168,7 @@ FocusScope {
                     break
                 }
             }
-            tuneIndex(restoreIndex)
+            tuneIndex(restoreIndex, false)
         }
 
         function onLiveTvStreamReady(channelId, url, httpHeaderFields) {
@@ -127,6 +178,8 @@ FocusScope {
             var label = channelLabel(channel)
             statusText = label
             hasStartedPlayback = true
+            tuningStaticVisible = false
+            streamRequestActive = false
             currentForceTranscode = pendingForceTranscode
             mpvController.loadAndPlay(url, 0.0, 0, -1, [], false, -1, 0.0,
                                       httpHeaderFields, false, "ota", false, label)
@@ -134,26 +187,44 @@ FocusScope {
 
         function onErrorOccurred(msg) {
             statusText = msg || "OTA ERROR"
+            streamRequestActive = false
+            tuningStaticVisible = true
         }
     }
 
     Connections {
         target: mpvController
         function onPlaybackFinished(finalPositionMs, finalDurationMs) {
+            if (stoppingForTune) {
+                stoppingForTune = false
+                return
+            }
             if (!leaving && hasStartedPlayback)
                 goBack()
         }
         function onPlaybackFailed() {
+            if (stoppingForTune) {
+                stoppingForTune = false
+                return
+            }
             if (!currentForceTranscode && pendingChannelId !== "") {
                 statusText = "RETRYING TRANSCODE"
                 pendingForceTranscode = true
-                mpvController.sendScriptMessage("240mp-ota-channel", statusText)
+                tuningStaticVisible = true
+                streamRequestActive = true
                 embyBackend.request_live_tv_stream(pendingChannelId, newSessionId(), true)
                 return
             }
             statusText = "OTA PLAYBACK FAILED"
+            streamRequestActive = false
+            tuningStaticVisible = true
         }
         function onScriptMessageReceived(message, arg) {
+            if (message === "240mp-ota-tune-now") {
+                tuneNow()
+                return
+            }
+
             if (message !== "240mp-ota-channel-step")
                 return
 
@@ -161,7 +232,7 @@ FocusScope {
             if (isNaN(delta) || delta === 0)
                 return
 
-            tuneRelative(delta)
+            tuneRelative(delta, false)
         }
     }
 
@@ -179,9 +250,15 @@ FocusScope {
             mpvController.stop()
     }
 
+    StaticBackground {
+        anchors.fill: parent
+        visible: otaRoot.tuningStaticVisible
+        running: visible
+    }
+
     Rectangle {
         anchors.fill: parent
-        color: "black"
+        color: otaRoot.tuningStaticVisible ? "transparent" : "black"
     }
 
     AppBar {
@@ -192,7 +269,7 @@ FocusScope {
         anchors.left: parent.left
         anchors.topMargin: root.sh * 0.125
         anchors.leftMargin: root.sw * 0.125
-        visible: !hasStartedPlayback
+        visible: otaRoot.tuningStaticVisible || !hasStartedPlayback
     }
 
     Text {
@@ -205,10 +282,11 @@ FocusScope {
         width: root.sw * 0.8
         wrapMode: Text.WordWrap
         font.pixelSize: root.sh * 0.05
+        visible: otaRoot.tuningStaticVisible || !hasStartedPlayback
     }
 
     Text {
-        text: root.hints.back + ":BACK  CH +/-:UP/DOWN"
+        text: root.hints.back + ":BACK  CH +/-:UP/DOWN  OK:TUNE"
         color: root.tertiaryColor
         font.family: root.globalFont
         anchors.bottom: parent.bottom
@@ -216,6 +294,6 @@ FocusScope {
         anchors.bottomMargin: root.sh * 0.1041667
         anchors.leftMargin: root.sw * 0.125
         font.pixelSize: root.sh * 0.0333333
-        visible: !hasStartedPlayback
+        visible: otaRoot.tuningStaticVisible || !hasStartedPlayback
     }
 }

@@ -120,12 +120,14 @@ private:
                              const QString &sessionId, const QString &audioId,
                              const QString &subtitleId, int offsetMs,
                              bool forceTranscode);
-    QJsonObject playbackDeviceProfile(bool forceTranscode) const;
+    QJsonObject playbackDeviceProfile(bool forceTranscode,
+                                      const QString &quality = {}) const;
     QJsonObject playbackInfoPayload(const QString &partKey,
                                     const QString &audioId,
                                     const QString &subtitleId,
                                     int offsetMs,
-                                    bool forceTranscode) const;
+                                    bool forceTranscode,
+                                    const QString &quality = {}) const;
     QString playbackUrlFromInfo(const QJsonObject &info,
                                 const QString &ratingKey,
                                 const QString &partKey,
@@ -133,7 +135,8 @@ private:
                                 const QString &audioId,
                                 const QString &subtitleId,
                                 bool forceTranscode,
-                                QJsonObject *selectedSource) const;
+                                QJsonObject *selectedSource,
+                                const QString &quality = {}) const;
     QString absoluteMediaUrl(const QString &pathOrUrl) const;
     QString withAccessToken(const QString &url) const;
     QString httpHeaderFieldsFor(const QJsonObject &mediaSource) const;
@@ -141,7 +144,8 @@ private:
                          const QString &playSessionId,
                          const QString &audioIndex = {},
                          const QString &subtitleIndex = {},
-                         bool transcode = false) const;
+                         bool transcode = false,
+                         const QString &quality = {}) const;
     QString subtitleUrlFor(const QString &itemId, const QString &mediaSourceId,
                            int streamIndex, const QString &codec) const;
 
