@@ -132,16 +132,17 @@ jobs:
 
           app_asset_name="$(basename "${app_assets[0]}")"
           image_asset_name="$(basename "${image_assets[0]}")"
+          download_base="https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}"
 
           {
             echo "### Downloads"
             echo
             echo "| Platform | File |"
             echo "|---|---|"
-            echo "| Raspberry Pi OS Trixie app update (arm64) | \`${app_asset_name}\` |"
-            echo "| Ready-to-flash Raspberry Pi OS image | \`${image_asset_name}\` |"
-            echo "| Image checksum | \`SHA256SUMS.txt\` |"
-            echo "| Installer | \`install.sh\` |"
+            echo "| Ready-to-flash Raspberry Pi OS image | [\`${image_asset_name}\`](${download_base}/${image_asset_name}) |"
+            echo "| Image checksum | [\`SHA256SUMS.txt\`](${download_base}/SHA256SUMS.txt) |"
+            echo "| Raspberry Pi OS Trixie app update (arm64) | [\`${app_asset_name}\`](${download_base}/${app_asset_name}) |"
+            echo "| Installer | [\`install.sh\`](${download_base}/install.sh) |"
             echo
             if [ -n "$previous_tag" ]; then
               echo "### Changes since ${previous_tag}"
