@@ -1,6 +1,8 @@
 # Building 240-MP
 
-If you are interested in building your own version of 240-MP and adding things to it then this page should cover what you need to get an environment set up. Raspberry Pi OS arm64 is the real target. macOS on Apple Silicon is kept as a quick local testing path for development only; release builds are Linux arm64 for Raspberry Pi.
+Most users should use the ready-to-flash Raspberry Pi image from the latest GitHub release. It is built for this Emby/Jellyfin fork and defaults to CRT/composite output, GPIO IR remote support, SSH debugging, and booting straight into 240-MP.
+
+If you want to customize the image, change the app, or do local development, this page covers the build setup. Raspberry Pi OS arm64 is the real target. macOS on Apple Silicon is kept as a quick local testing path for development only; release builds are Linux arm64 for Raspberry Pi.
 
 ## macOS (ARM, local testing only)
 
@@ -166,7 +168,7 @@ For HDMI output:
 PI_IMAGE_PROFILE=hdmi ./scripts/build-pi-image.sh
 ```
 
-Output images are written to `.cache/pi-gen-arm64/deploy/`. The default login is `tater` / `pi`; see [INSTALL.md](INSTALL.md#option-1-build-a-ready-to-flash-appliance-image) for all supported image variables.
+Output images are written to `.cache/pi-gen-arm64/deploy/`. The default login is `tater` / `pi`; see [INSTALL.md](INSTALL.md#option-2-build-a-custom-image) for all supported image variables.
 
 ## Gamepad input (input.cfg)
 

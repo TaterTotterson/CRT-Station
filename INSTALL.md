@@ -2,15 +2,22 @@
 
 ## On a Raspberry Pi
 
-The following steps will set up an SD card for your Raspberry Pi with the latest version of 240-MP (and optionally set it up to autostart after boot).  
+The recommended setup is to download the ready-to-flash Raspberry Pi image from the latest GitHub release, write it to an SD card, and boot the Pi.
 
-If you are building from source, you can now skip the manual OS setup and build a ready-to-flash appliance image that has Raspberry Pi OS Lite, 240-MP, dependencies, display config, and the boot service already installed.
+The release image is built for the Emby/Jellyfin fork of 240-MP. It includes Raspberry Pi OS Lite, 240-MP, runtime dependencies, the boot service, SSH debugging, CRT/composite defaults, and GPIO IR remote support.
 
-### Option 1: Build a ready-to-flash appliance image
+### Option 1: Flash the ready-to-flash image (recommended)
 
-The repo includes a [pi-gen](https://github.com/RPi-Distro/pi-gen) wrapper that builds a Raspberry Pi OS Lite (64-bit) image and enables 240-MP on boot.
+1) Open the [latest release](https://github.com/TaterTotterson/240-MP-Emby-Jelly/releases/latest).
+2) Download the `image_...img.xz` asset.
+3) Flash it to an SD card with Raspberry Pi Imager, Balena Etcher, or `dd`.
+4) Boot the Pi.
 
-Published GitHub releases include a ready-to-flash `.img.xz` image for the default CRT/composite NTSC profile. Use the build steps below only when you want to customize the image locally.
+The default image boots straight into 240-MP, uses CRT/composite NTSC output, enables SSH for debugging, and enables GPIO IR receiver support on GPIO23 (physical pin 16), matching Argon Raspberry Pi cases.
+
+The default login is `tater` / `pi`. If this image will leave your own network, build a custom image with a stronger password first.
+
+### Option 2: Build a custom image
 
 Requirements on your build machine:
 
@@ -131,7 +138,7 @@ Press the remote buttons, copy the printed scancodes into `/etc/rc_keymaps/240mp
 sudo systemctl restart 240mp-ir-keymap.service
 ```
 
-### Option 2: Install onto an existing Raspberry Pi OS card
+### Option 3: Install onto an existing Raspberry Pi OS card
 
 Steps 1-4 are focused on setting up a new card with Raspberry Pi OS Lite (64-Bit) and include options for writing a config.txt that will output to a CRT or modern TV.  
 

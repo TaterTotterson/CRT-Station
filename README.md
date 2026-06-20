@@ -2,11 +2,11 @@
 
 # 240-MP
 
-240-MP is a retro VCR-style media frontend for Raspberry Pi, preferably hooked up to a CRT TV over composite video.
+240-MP is a retro VCR-style Emby/Jellyfin media frontend for Raspberry Pi, preferably hooked up to a CRT TV over composite video.
 
-Playback experiences are handled via modules so new integrations can be added without reshaping the shell. This fork includes Local Files, Video on Demand for local Emby/Jellyfin servers, and Ambient Mode for looping video/audio ambience.
+This project is an Emby/Jellyfin-focused fork of [anthonycaccese/240-MP](https://github.com/anthonycaccese/240-MP). Playback experiences are handled via modules so new integrations can be added without reshaping the shell. This fork includes Local Files, Video on Demand for local Emby/Jellyfin servers, and Ambient Mode for looping video/audio ambience.
 
-It launches [mpv](https://mpv.io/) as the playback engine. The ready-to-flash image and Raspberry Pi installer install the required runtime dependencies for you.
+It launches [mpv](https://mpv.io/) as the playback engine. The easiest setup is to download the ready-to-flash Raspberry Pi image from the latest release, write it to an SD card, and boot the Pi. The default image is set up for CRT/composite output, GPIO IR remote support, SSH debugging, and Emby/Jellyfin use.
 
 ## Video Overview
 
@@ -60,7 +60,7 @@ Watch on YouTube: https://youtu.be/r-gylGDoELY
 - Local HTTP playback-control API for companion apps and voice-assistant bridges
 
 ## Install 
-- [Ready-to-flash Raspberry Pi image](INSTALL.md#option-1-build-a-ready-to-flash-appliance-image)
+- [Ready-to-flash Raspberry Pi image](INSTALL.md#option-1-flash-the-ready-to-flash-image-recommended)
 - [On a Raspberry Pi](INSTALL.md#on-a-raspberry-pi)
 - [Build from source / local macOS testing](BUILDING.md)
 
@@ -91,6 +91,7 @@ Watch on YouTube: https://youtu.be/r-gylGDoELY
 
 ## Credits & Acknowledgments 
 
+- This fork is based on [anthonycaccese/240-MP](https://github.com/anthonycaccese/240-MP).
 - The `VCR OSD Mono` font was created by Riciery Santos Leal (a.k.a. mrmanet) https://www.dafont.com/vcr-osd-mono.font
 - Because this is a hobby project (and a fairly niche use case), I am using [Claude Code](https://www.anthropic.com/product/claude-code) to build a large part of the backend C++ code and structure the modules.  If you have concerns with that, I am glad to talk through it.  Also, please feel free to fork this repo, update any aspects and tailor things to your own use case; that's why the source is fully open and available.
 - Thank you to Emby and Jellyfin for local media-server APIs that make custom clients possible
