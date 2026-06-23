@@ -64,6 +64,18 @@ QString abbreviatedNetworkBody(const QByteArray &body) {
     return QString::fromUtf8(body.left(240)).simplified();
 }
 
+bool runningOnRaspberryPi3() {
+#ifdef Q_OS_LINUX
+    QFile f(QStringLiteral("/proc/device-tree/model"));
+    if (!f.open(QIODevice::ReadOnly))
+        return false;
+    const QString model = QString::fromLatin1(f.readAll()).remove(QChar('\0')).trimmed();
+    return model.startsWith(QStringLiteral("Raspberry Pi 3"));
+#else
+    return false;
+#endif
+}
+
 QString musicArtistName(const QJsonObject &item) {
     QString artist = item["AlbumArtist"].toString();
     if (artist.isEmpty()) {
@@ -283,6 +295,9 @@ QString EmbyJellyfinBackend::userId() const {
 }
 
 QString EmbyJellyfinBackend::videoQuality() const {
+    if (runningOnRaspberryPi3())
+        return QStringLiteral("480p");
+
     QJsonObject cfg = loadConfig();
     return cfg["modules"].toObject()[kModuleId].toObject()["video_quality"].toString("auto");
 }

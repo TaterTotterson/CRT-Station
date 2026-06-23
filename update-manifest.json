@@ -1,12 +1,14 @@
 {
-  "version": "2026.06.23.5",
-  "app_version": "1.0.0",
+  "version": "2026.06.23.6",
+  "app_version": "1.0.1",
   "channel": "main",
   "repo": "https://github.com/TaterTotterson/CRT-Station",
   "manifest_url": "https://raw.githubusercontent.com/TaterTotterson/CRT-Station/main/update-manifest.json",
-  "binary_archive": "https://github.com/TaterTotterson/CRT-Station/releases/download/v1.0.0/240-MP-v1.0.0-linux-arm64.tar.gz",
-  "source_archive": "https://github.com/TaterTotterson/CRT-Station/archive/refs/tags/v1.0.0.tar.gz",
+  "binary_archive": "https://github.com/TaterTotterson/CRT-Station/releases/download/v1.0.1/240-MP-v1.0.1-linux-arm64.tar.gz",
+  "source_archive": "https://github.com/TaterTotterson/CRT-Station/archive/refs/tags/v1.0.1.tar.gz",
   "notes": [
+    "Adds a Raspberry Pi 3 compatibility playback path with safer mpv hardware decode and one-time software fallback.",
+    "Caps Raspberry Pi 3 Video on Demand and Public Access streams to CRT-friendly 480p H.264/AAC.",
     "Starts the CRT Station 1.0.0 release line while preserving updates from the previous date-based versions.",
     "Fixes the CRT Station boot splash install path so updates and fresh images rebuild Plymouth initramfs with the custom theme.",
     "Changes Plex Video on Demand playback to use Plex transcoding instead of direct play, with 480p, 720p, and 1080p quality targets.",

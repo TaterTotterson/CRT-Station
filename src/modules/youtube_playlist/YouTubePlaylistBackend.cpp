@@ -33,6 +33,19 @@ QStringList executableSearchPaths()
     return paths;
 }
 
+bool runningOnRaspberryPi3()
+{
+#ifdef Q_OS_LINUX
+    QFile f(QStringLiteral("/proc/device-tree/model"));
+    if (!f.open(QIODevice::ReadOnly))
+        return false;
+    const QString model = QString::fromLatin1(f.readAll()).remove(QChar('\0')).trimmed();
+    return model.startsWith(QStringLiteral("Raspberry Pi 3"));
+#else
+    return false;
+#endif
+}
+
 QString cleanTitle(QString title, const QString &fallback)
 {
     title = title.trimmed();
@@ -258,6 +271,8 @@ QString YouTubePlaylistBackend::normalize_playlist_input(const QString &input) c
 QString YouTubePlaylistBackend::ytdl_format_for_quality(const QString &quality) const
 {
     const QString q = quality.trimmed().toLower();
+    if (runningOnRaspberryPi3() && q == QLatin1String("best"))
+        return QStringLiteral("best[height<=480][ext=mp4]/bestvideo[height<=480][vcodec^=avc1]+bestaudio[acodec^=mp4a]/best[height<=480]/best");
     if (q == QLatin1String("best"))
         return QStringLiteral("bestvideo[vcodec^=avc1]+bestaudio[acodec^=mp4a]/best");
     if (q == QLatin1String("480p"))

@@ -80,7 +80,7 @@ signals:
     // Emitted when mpv exits because the file played to its natural end (mpv's
     // end-file event reported reason "eof"). Used to trigger autoplay-next.
     void playbackFinishedNaturally(int finalPositionMs, int finalDurationMs);
-    // Emitted when mpv exits with an error (code 2 — file could not be played).
+    // Emitted when mpv reports a playback error or exits unexpectedly.
     // Player.qml uses this to retry with transcoding.
     void playbackFailed();
     // Emitted when an mpv Lua script sends a script-message back over IPC.
@@ -95,8 +95,28 @@ private:
     // Hardware video-decode profile, detected once from /proc/device-tree/model.
     enum class VideoProfile { Pi3, Pi4, PiFullKms, Generic };
 
+    struct PlaybackRequest {
+        QString url;
+        float startSeconds = 0.0f;
+        int audioTrack = 0;
+        int subTrack = -1;
+        QStringList subFiles;
+        bool loop = false;
+        int playlistStart = -1;
+        float transcodeOffsetSec = 0.0f;
+        QString httpHeaderFields;
+        bool muteAudio = false;
+        QString oscMode;
+        bool shuffle = false;
+        QString displayTitle;
+        bool audioOnly = false;
+        bool allowYtdl = false;
+        QString ytdlFormat;
+    };
+
     void sendCommand(const QJsonArray &args);
     void doHeadlessRestore(int pos, int dur, bool naturalEof, bool playbackError);
+    bool shouldRetryPi3SoftwareFallback(bool playbackError) const;
     bool detectHeadlessMode() const;
     VideoProfile detectVideoProfile() const;
     bool hasCompositeDrmConnector() const;
@@ -126,6 +146,7 @@ private:
     QString       m_inputConfPath;
     QString       m_logFilePath;
     QString       m_lastEndFileReason;  // mpv end-file "reason" for the current session
+    PlaybackRequest m_lastPlaybackRequest;
     int           m_position     = 0;
     int           m_duration     = 0;
     int           m_playlistPos  = -1;
@@ -134,6 +155,11 @@ private:
     int           m_previousVt   = -1;
     int           m_qtDrmFd      = -1;
     bool          m_qtDrmMasterDropped = false;
+    bool          m_hasLastPlaybackRequest = false;
+    bool          m_replayingPi3Fallback = false;
+    bool          m_pi3FallbackAttempted = false;
+    bool          m_pi3SoftwareFallback = false;
+    bool          m_currentAudioOnly = false;
 #ifdef Q_OS_LINUX
     DrmSavedState m_savedDrm     = {};
 #endif

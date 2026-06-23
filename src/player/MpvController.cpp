@@ -131,6 +131,31 @@ void MpvController::loadAndPlay(const QString &url, float startSeconds,
                                  bool audioOnly,
                                  bool allowYtdl,
                                  const QString &ytdlFormat) {
+    if (!m_replayingPi3Fallback) {
+        m_lastPlaybackRequest = PlaybackRequest{
+            url,
+            startSeconds,
+            audioTrack,
+            subTrack,
+            subFiles,
+            loop,
+            playlistStart,
+            transcodeOffsetSec,
+            httpHeaderFields,
+            muteAudio,
+            oscMode,
+            shuffle,
+            displayTitle,
+            audioOnly,
+            allowYtdl,
+            ytdlFormat
+        };
+        m_hasLastPlaybackRequest = true;
+        m_pi3FallbackAttempted = false;
+        m_pi3SoftwareFallback = false;
+    }
+    m_currentAudioOnly = audioOnly;
+
     if (m_process) {
         m_process->disconnect();
         if (m_process->state() != QProcess::NotRunning) {
@@ -504,6 +529,42 @@ void MpvController::onProcessFinished() {
         onIpcReadyRead();
     m_ipc->abort();
     QFile::remove(m_socketPath);
+
+    // mpv reports reason "eof" only when the file played to its natural end.
+    // Any other reason (quit/stop/error) or a missing end-file event (crash/kill)
+    // is treated as a non-natural exit — the safe default that never auto-advances.
+    const bool naturalEof = (m_lastEndFileReason == "eof");
+    const bool userStopped = (m_lastEndFileReason == "quit" ||
+                              m_lastEndFileReason == "stop");
+    const bool playbackError = (m_lastEndFileReason == "error" ||
+                                (exitCode != 0 && !userStopped));
+
+    if (shouldRetryPi3SoftwareFallback(playbackError)) {
+        qWarning("[MpvController] Pi 3 mpv hardware path failed; retrying DRM software fallback");
+        m_pi3FallbackAttempted = true;
+        m_pi3SoftwareFallback = true;
+        const PlaybackRequest req = m_lastPlaybackRequest;
+        m_replayingPi3Fallback = true;
+        loadAndPlay(req.url,
+                    req.startSeconds,
+                    req.audioTrack,
+                    req.subTrack,
+                    req.subFiles,
+                    req.loop,
+                    req.playlistStart,
+                    req.transcodeOffsetSec,
+                    req.httpHeaderFields,
+                    req.muteAudio,
+                    req.oscMode,
+                    req.shuffle,
+                    req.displayTitle,
+                    req.audioOnly,
+                    req.allowYtdl,
+                    req.ytdlFormat);
+        m_replayingPi3Fallback = false;
+        return;
+    }
+
     const int pos = m_position;
     const int dur = m_duration;
     m_position = 0;
@@ -513,12 +574,6 @@ void MpvController::onProcessFinished() {
         emit pausedChanged(m_paused);
     }
     emit runningChanged(false);
-
-    // mpv reports reason "eof" only when the file played to its natural end.
-    // Any other reason (quit/stop/error) or a missing end-file event (crash/kill)
-    // is treated as a non-natural exit — the safe default that never auto-advances.
-    const bool naturalEof = (m_lastEndFileReason == "eof");
-    const bool playbackError = (exitCode == 2 || m_lastEndFileReason == "error");
 
     if (m_headlessMode) {
         // Defer DRM restore and VT switch by 200 ms. mpv's last KMS atomic
@@ -572,6 +627,17 @@ void MpvController::doHeadlessRestore(int pos, int dur, bool naturalEof, bool pl
         emit playbackFinishedNaturally(pos, dur);
     else
         emit playbackFinished(pos, dur);
+}
+
+bool MpvController::shouldRetryPi3SoftwareFallback(bool playbackError) const {
+    return playbackError &&
+           m_headlessMode &&
+           m_videoProfile == VideoProfile::Pi3 &&
+           !m_currentAudioOnly &&
+           m_hasLastPlaybackRequest &&
+           !m_pi3FallbackAttempted &&
+           !m_pi3SoftwareFallback &&
+           !m_lastPlaybackRequest.url.isEmpty();
 }
 
 void MpvController::sendCommand(const QJsonArray &args) {
@@ -657,12 +723,25 @@ void MpvController::appendVideoArgs(QStringList &args) const {
             }
             args << "--hwdec=v4l2m2m-copy";
         } else if (m_videoProfile == VideoProfile::Pi3) {
-            // Pi 3B/3B+: too weak for the copy + software-scale path above (it pegs
-            // all four cores and gets choppy). Zero-copy v4l2m2m hands decoded frames
-            // straight to a DRM overlay plane for the lowest possible CPU (~15%) with
-            // smooth playback. The one trade-off: the overlay plane can't zoom/crop,
-            // so mpv's --panscan (the OSC crop button) blanks the video on this path.
-            args << "--vo=gpu" << "--gpu-context=drm" << "--hwdec=v4l2m2m";
+            if (m_pi3SoftwareFallback) {
+                // Last resort for Pi 3s where the DRM GPU/v4l2m2m path fails to
+                // initialize at all. This costs more CPU, so media providers cap
+                // Pi 3 streams to CRT-friendly 480p.
+                args << "--vo=drm";
+                if (hasCompositeDrmConnector()) {
+                    args << "--drm-device=/dev/dri/card1"
+                         << "--drm-connector=Composite-1";
+                }
+                args << "--hwdec=no" << "--profile=sw-fast";
+            } else {
+                // Pi 3B/3B+: prefer mpv's safer hardware selection instead of
+                // forcing one decoder. Some Pi 3 images reject the strict
+                // v4l2m2m path, but auto-safe can fall back before playback dies.
+                args << "--vo=gpu"
+                     << "--gpu-context=drm"
+                     << "--hwdec=auto-safe"
+                     << "--profile=fast";
+            }
         } else {
             // Pi 5 (Full KMS) and the safe fallback for unknown headless Linux.
             args << "--vo=drm" << "--hwdec=auto-safe";
