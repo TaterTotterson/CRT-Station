@@ -52,6 +52,13 @@ public:
     Q_INVOKABLE void installUpdate();
     Q_INVOKABLE QVariantMap getSshInfo() const;
     Q_INVOKABLE QVariantMap setSshEnabled(bool enabled);
+    Q_INVOKABLE QVariantMap getBluetoothInfo() const;
+    Q_INVOKABLE QVariantMap setBluetoothEnabled(bool enabled);
+    Q_INVOKABLE QVariantMap scanBluetoothDevices();
+    Q_INVOKABLE void scanBluetoothDevicesAsync();
+    Q_INVOKABLE QVariantMap pairBluetoothDevice(const QString &address);
+    Q_INVOKABLE QVariantMap connectBluetoothDevice(const QString &address);
+    Q_INVOKABLE QVariantMap forgetBluetoothDevice(const QString &address);
 
     // Registers a module backend: stores it for action routing, exposes it to QML under
     // contextProperty, and connects its optional signals/slots by introspection (only
@@ -67,6 +74,7 @@ signals:
     void moduleAuthStateChanged(const QString &moduleId);
     void updateCheckFinished(const QVariantMap &result);
     void updateInstallFinished(const QVariantMap &result);
+    void bluetoothScanFinished(const QVariantMap &result);
 
 private slots:
     // Receive a backend's signal and re-emit it with the module ID prepended, recovering

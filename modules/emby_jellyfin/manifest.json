@@ -12,6 +12,13 @@
       "default": "ON"
     },
     {
+      "key": "media_provider",
+      "label": "Provider",
+      "type": "list_single",
+      "options": ["EMBY/JELLYFIN", "PLEX"],
+      "default": "EMBY/JELLYFIN"
+    },
+    {
       "key": "libraries",
       "label": "Libraries",
       "type": "multiselect_submenu",

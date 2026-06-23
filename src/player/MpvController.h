@@ -53,7 +53,9 @@ public:
                                   const QString &oscMode = {},
                                   bool shuffle = false,
                                   const QString &displayTitle = {},
-                                  bool audioOnly = false);
+                                  bool audioOnly = false,
+                                  bool allowYtdl = false,
+                                  const QString &ytdlFormat = {});
     Q_INVOKABLE void loadAudioAndPlay(const QString &url,
                                       float startSeconds = 0.0f,
                                       const QString &httpHeaderFields = {},
@@ -64,6 +66,8 @@ public:
     Q_INVOKABLE void sendScriptMessage(const QString &message, const QString &arg = {});
     Q_INVOKABLE void setPaused(bool paused);
     Q_INVOKABLE void togglePause();
+    Q_INVOKABLE void setPlaybackSpeed(double speed);
+    Q_INVOKABLE void setAudioPitchCorrection(bool enabled);
 
 signals:
     void positionChanged(int ms);

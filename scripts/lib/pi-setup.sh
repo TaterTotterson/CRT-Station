@@ -4,6 +4,7 @@
 PI240_RUNTIME_PACKAGES=(
     libqt6quick6
     libqt6qml6
+    libqt6concurrent6
     libqt6opengl6
     libqt6network6
     libqt6svg6
@@ -14,11 +15,41 @@ PI240_RUNTIME_PACKAGES=(
     qml6-module-qtquick-window
     qml6-module-qtquick-effects
     libsdl2-2.0-0
+    bluez
+    bluetooth
+    rfkill
+    cifs-utils
     ir-keytable
     mpv
     openssh-server
     plymouth
     plymouth-themes
+    retroarch
+    yt-dlp
+)
+
+PI240_RETRO_CORE_PACKAGES=(
+    libretro-nestopia
+    libretro-genesisplusgx
+    libretro-gambatte
+    libretro-mgba
+)
+
+PI240_OPTIONAL_RETRO_CORE_PACKAGES=(
+    libretro-snes9x
+    libretro-beetle-psx
+    libretro-pcsx-rearmed
+)
+
+PI240_PSX_CORE_URL="${PI240_PSX_CORE_URL:-https://buildbot.libretro.com/nightly/linux/aarch64/latest/pcsx_rearmed_libretro.so.zip}"
+
+PI240_PSX_CORE_NAMES=(
+    pcsx_rearmed_libretro.so
+    mednafen_psx_hw_libretro.so
+    mednafen_psx_libretro.so
+    beetle_psx_hw_libretro.so
+    beetle_psx_libretro.so
+    swanstation_libretro.so
 )
 
 pi240_is_root() {
@@ -53,6 +84,8 @@ pi240_install_file_from_stdin() {
 pi240_install_runtime_dependencies() {
     pi240_root apt-get update -qq
     pi240_root apt-get install -y "${PI240_RUNTIME_PACKAGES[@]}"
+    pi240_install_latest_ytdlp
+    pi240_install_retro_core_dependencies
 }
 
 pi240_install_missing_runtime_dependencies() {
@@ -69,11 +102,162 @@ pi240_install_missing_runtime_dependencies() {
     done
 
     if [ "${#missing[@]}" -eq 0 ]; then
+        pi240_install_latest_ytdlp
+        pi240_install_missing_retro_core_dependencies
         return 0
     fi
 
     pi240_root env DEBIAN_FRONTEND=noninteractive apt-get update -qq
     pi240_root env DEBIAN_FRONTEND=noninteractive apt-get install -y "${missing[@]}"
+    pi240_install_latest_ytdlp
+    pi240_install_missing_retro_core_dependencies no-update
+}
+
+pi240_install_latest_ytdlp() {
+    if ! command -v curl >/dev/null 2>&1; then
+        return 0
+    fi
+
+    local asset
+    case "$(uname -m)" in
+        aarch64|arm64)
+            asset="yt-dlp_linux_aarch64"
+            ;;
+        x86_64|amd64)
+            asset="yt-dlp_linux"
+            ;;
+        *)
+            printf '[240mp-setup] Skipping yt-dlp binary refresh on unsupported arch: %s\n' "$(uname -m)" >&2
+            return 0
+            ;;
+    esac
+
+    local url="${PI240_YTDLP_URL:-https://github.com/yt-dlp/yt-dlp/releases/latest/download/${asset}}"
+    local tmp
+    tmp="$(mktemp)"
+    if curl -fsSL --retry 3 --connect-timeout 15 --max-time 180 -o "$tmp" "$url"; then
+        pi240_root install -m 0755 "$tmp" /usr/local/bin/yt-dlp
+        /usr/local/bin/yt-dlp --version >/dev/null 2>&1 || true
+    else
+        printf '[240mp-setup] Could not refresh yt-dlp from %s; keeping packaged copy\n' "$url" >&2
+    fi
+    rm -f "$tmp"
+}
+
+pi240_install_retro_core_dependencies() {
+    local pkg
+    for pkg in "${PI240_RETRO_CORE_PACKAGES[@]}" "${PI240_OPTIONAL_RETRO_CORE_PACKAGES[@]}"; do
+        if apt-cache show "$pkg" >/dev/null 2>&1; then
+            pi240_root env DEBIAN_FRONTEND=noninteractive apt-get install -y "$pkg" || true
+        else
+            printf '[240mp-setup] Optional RetroArch core package unavailable: %s\n' "$pkg" >&2
+        fi
+    done
+    pi240_install_psx_core_fallback
+}
+
+pi240_install_missing_retro_core_dependencies() {
+    if ! command -v dpkg-query >/dev/null 2>&1 || ! command -v apt-get >/dev/null 2>&1; then
+        return 0
+    fi
+
+    local missing=()
+    local pkg
+    for pkg in "${PI240_RETRO_CORE_PACKAGES[@]}" "${PI240_OPTIONAL_RETRO_CORE_PACKAGES[@]}"; do
+        if ! dpkg-query -W -f='${Status}' "$pkg" 2>/dev/null | grep -q 'install ok installed'; then
+            missing+=("$pkg")
+        fi
+    done
+
+    if [ "${#missing[@]}" -eq 0 ]; then
+        return 0
+    fi
+
+    if [ "${1:-}" != "no-update" ]; then
+        pi240_root env DEBIAN_FRONTEND=noninteractive apt-get update -qq
+    fi
+
+    for pkg in "${missing[@]}"; do
+        if apt-cache show "$pkg" >/dev/null 2>&1; then
+            pi240_root env DEBIAN_FRONTEND=noninteractive apt-get install -y "$pkg" || true
+        else
+            printf '[240mp-setup] Optional RetroArch core package unavailable: %s\n' "$pkg" >&2
+        fi
+    done
+    pi240_install_psx_core_fallback
+}
+
+pi240_retro_core_dirs() {
+    printf '%s\n' \
+        /usr/lib/aarch64-linux-gnu/libretro \
+        /usr/lib/arm-linux-gnueabihf/libretro \
+        /usr/lib/x86_64-linux-gnu/libretro \
+        /usr/lib/libretro \
+        /usr/local/lib/libretro
+}
+
+pi240_has_retro_core() {
+    local name="$1"
+    local dir
+    while IFS= read -r dir; do
+        [ -f "$dir/$name" ] && return 0
+    done < <(pi240_retro_core_dirs)
+    return 1
+}
+
+pi240_has_psx_core() {
+    local name
+    for name in "${PI240_PSX_CORE_NAMES[@]}"; do
+        pi240_has_retro_core "$name" && return 0
+    done
+    return 1
+}
+
+pi240_install_psx_core_fallback() {
+    pi240_has_psx_core && return 0
+
+    if ! command -v curl >/dev/null 2>&1 || ! command -v python3 >/dev/null 2>&1; then
+        printf '[240mp-setup] PSX core fallback needs curl and python3.\n' >&2
+        return 0
+    fi
+
+    local tmp target
+    tmp="$(mktemp -d "${TMPDIR:-/tmp}/240mp-psx-core.XXXXXX")"
+    target="/usr/local/lib/libretro/pcsx_rearmed_libretro.so"
+    trap 'rm -rf "$tmp"' RETURN
+
+    printf '[240mp-setup] Installing PSX RetroArch core from Libretro buildbot.\n' >&2
+    if ! curl -fsSL "$PI240_PSX_CORE_URL" -o "$tmp/pcsx_rearmed.zip"; then
+        printf '[240mp-setup] Warning: could not download PSX core: %s\n' "$PI240_PSX_CORE_URL" >&2
+        return 0
+    fi
+
+    if ! python3 - "$tmp/pcsx_rearmed.zip" "$tmp" <<'PY'
+import pathlib
+import sys
+import zipfile
+
+zip_path = pathlib.Path(sys.argv[1])
+out_dir = pathlib.Path(sys.argv[2])
+member_name = "pcsx_rearmed_libretro.so"
+
+with zipfile.ZipFile(zip_path) as archive:
+    for member in archive.namelist():
+        if pathlib.PurePosixPath(member).name == member_name:
+            out_path = out_dir / member_name
+            out_path.write_bytes(archive.read(member))
+            raise SystemExit(0)
+
+print(f"{member_name} not found in {zip_path}", file=sys.stderr)
+raise SystemExit(1)
+PY
+    then
+        printf '[240mp-setup] Warning: downloaded PSX core archive was not usable.\n' >&2
+        return 0
+    fi
+
+    pi240_root install -d -m 0755 /usr/local/lib/libretro
+    pi240_root install -m 0644 "$tmp/pcsx_rearmed_libretro.so" "$target"
 }
 
 pi240_install_tty_rule() {
@@ -275,12 +459,12 @@ pi240_enable_ir_overlay() {
 
     if pi240_is_root; then
         {
-            printf '\n# --- 240-MP IR remote receiver ---\n'
+            printf '\n# --- CRT Station IR remote receiver ---\n'
             printf 'dtoverlay=gpio-ir,gpio_pin=%s\n' "$gpio_pin"
         } >> "$config_txt"
     else
         {
-            printf '\n# --- 240-MP IR remote receiver ---\n'
+            printf '\n# --- CRT Station IR remote receiver ---\n'
             printf 'dtoverlay=gpio-ir,gpio_pin=%s\n' "$gpio_pin"
         } | sudo tee -a "$config_txt" >/dev/null
     fi
@@ -295,8 +479,8 @@ pi240_install_boot_splash() {
 
     pi240_install_file_from_stdin /usr/share/plymouth/themes/240mp/240mp.plymouth 0644 <<'PLYMOUTH_THEME'
 [Plymouth Theme]
-Name=240-MP
-Description=240-MP boot splash
+Name=CRT Station
+Description=CRT Station boot splash
 ModuleName=script
 
 [script]
@@ -311,10 +495,11 @@ Window.SetBackgroundBottomColor(0.02, 0.02, 0.02);
 screen_width = Window.GetWidth();
 screen_height = Window.GetHeight();
 
-title_y = screen_height * 0.38;
-line_y = screen_height * 0.50;
-sub_y = screen_height * 0.59;
-load_y = screen_height * 0.73;
+title_y = screen_height * 0.31;
+line_y = screen_height * 0.43;
+sub_y = screen_height * 0.53;
+load_y = screen_height * 0.68;
+hint_y = screen_height * 0.77;
 
 fun center_sprite(sprite, image, y) {
     sprite.SetX((screen_width - image.GetWidth()) / 2);
@@ -327,28 +512,33 @@ fun set_sprite_text(sprite, text, red, green, blue, y) {
     center_sprite(sprite, image, y);
 }
 
-title_image = Image.Text("VIDEO ON DEMAND", 1.0, 1.0, 1.0);
+title_image = Image.Text("CRT STATION", 1.0, 1.0, 1.0);
 title_sprite = Sprite(title_image);
 center_sprite(title_sprite, title_image, title_y);
 
-line_image = Image.Text("////////////////////////////", 1.0, 0.42, 0.0);
+line_image = Image.Text("///// COMPOSITE VIDEO SYSTEM /////", 1.0, 0.42, 0.0);
 line_sprite = Sprite(line_image);
 center_sprite(line_sprite, line_image, line_y);
 
-sub_image = Image.Text("240-MP", 0.55, 0.55, 0.55);
+sub_image = Image.Text("SIGNAL LOCK  --  CRT READY", 0.55, 0.55, 0.55);
 sub_sprite = Sprite(sub_image);
 center_sprite(sub_sprite, sub_image, sub_y);
 
-load_image = Image.Text("LOADING", 1.0, 0.42, 0.0);
+load_image = Image.Text("BOOTING", 1.0, 0.42, 0.0);
 load_sprite = Sprite(load_image);
 center_sprite(load_sprite, load_image, load_y);
 
+hint_image = Image.Text("PLEASE WAIT", 0.55, 0.55, 0.55);
+hint_sprite = Sprite(hint_image);
+center_sprite(hint_sprite, hint_image, hint_y);
+
 fun message_callback(text) {
     if (text == "240MP_UPDATE") {
-        set_sprite_text(title_sprite, "PLEASE WAIT", 1.0, 1.0, 1.0, title_y);
-        set_sprite_text(line_sprite, "FLASHING FIRMWARE", 1.0, 0.42, 0.0, line_y);
+        set_sprite_text(title_sprite, "CRT STATION", 1.0, 1.0, 1.0, title_y);
+        set_sprite_text(line_sprite, "///// FLASHING FIRMWARE /////", 1.0, 0.42, 0.0, line_y);
         set_sprite_text(sub_sprite, "UPDATE IN PROGRESS", 0.55, 0.55, 0.55, sub_y);
         set_sprite_text(load_sprite, "DO NOT POWER OFF", 1.0, 0.42, 0.0, load_y);
+        set_sprite_text(hint_sprite, "VIDEO WILL RETURN", 0.55, 0.55, 0.55, hint_y);
     }
 }
 
@@ -442,7 +632,7 @@ pi240_install_launcher() {
 
     {
         printf '#!/usr/bin/env bash\n'
-        printf '# 240-MP launcher - auto-detects display platform\n'
+        printf '# CRT Station launcher - auto-detects display platform\n'
         printf 'INSTALL_DIR=%q\n' "$install_dir"
         cat <<'LAUNCHER'
 
@@ -509,6 +699,11 @@ SUDOERS
     if command -v visudo >/dev/null 2>&1; then
         pi240_root visudo -cf /etc/sudoers.d/240mp-update
     fi
+
+    # Compatibility migration: older updater scripts already call this function
+    # during OTA, but they do not know about newer system helpers yet.
+    pi240_install_bluetooth_control "$service_user" /usr/local/sbin/240mp-bluetooth-control
+    pi240_install_retro_mount_helper "$service_user" /usr/local/sbin/240mp-retro-mount
 }
 
 pi240_install_ssh_control() {
@@ -589,6 +784,431 @@ SUDOERS
             pi240_root "$helper" disable || true
             ;;
     esac
+}
+
+pi240_append_file() {
+    local path="$1"
+    shift
+
+    if pi240_is_root; then
+        printf '%s\n' "$@" >> "$path"
+    else
+        printf '%s\n' "$@" | sudo tee -a "$path" >/dev/null
+    fi
+}
+
+pi240_set_bluetooth_input_option() {
+    local option="$1"
+    local value="$2"
+    local file="/etc/bluetooth/input.conf"
+
+    pi240_root install -d -m 0755 /etc/bluetooth
+    if [ ! -f "$file" ]; then
+        pi240_install_file_from_stdin "$file" 0644 <<EOF
+[General]
+${option}=${value}
+EOF
+        return 0
+    fi
+
+    if grep -q -E "^#?${option}=" "$file"; then
+        pi240_root sed -i -E "s/^#?${option}=.*/${option}=${value}/" "$file"
+        return 0
+    fi
+
+    if ! grep -q -E '^\[General\]' "$file"; then
+        pi240_append_file "$file" "" "[General]"
+    fi
+    pi240_append_file "$file" "${option}=${value}"
+}
+
+pi240_configure_bluetooth_input() {
+    # DualSense and some other controllers can pair/trust without BlueZ marking
+    # them bonded. The default HID input policy then connects but refuses to
+    # create /dev/input nodes, so SDL never sees the controller.
+    pi240_set_bluetooth_input_option UserspaceHID true
+    pi240_set_bluetooth_input_option ClassicBondedOnly false
+}
+
+pi240_install_bluetooth_control() {
+    local service_user="${1:-mp240}"
+    local helper="${2:-/usr/local/sbin/240mp-bluetooth-control}"
+    local default_enabled="${3:-}"
+
+    pi240_configure_bluetooth_input
+
+    pi240_install_file_from_stdin "$helper" 0755 <<'HELPER'
+#!/usr/bin/env bash
+set -euo pipefail
+
+unit="bluetooth.service"
+action="${1:-status}"
+address="${2:-}"
+
+systemd_live() {
+    [ -d /run/systemd/system ]
+}
+
+truthy() {
+    case "${1:-}" in
+        yes|Yes|YES|true|TRUE|1|on|ON) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+valid_address() {
+    [[ "$1" =~ ^[A-Fa-f0-9]{2}(:[A-Fa-f0-9]{2}){5}$ ]]
+}
+
+available() {
+    command -v bluetoothctl >/dev/null 2>&1 && systemctl cat "$unit" >/dev/null 2>&1
+}
+
+require_available() {
+    available || {
+        echo "bluetoothctl or bluetooth.service is not available" >&2
+        exit 1
+    }
+}
+
+adapter_value() {
+    local key="$1"
+    bluetoothctl show 2>/dev/null | sed -n -E "s/^[[:space:]]*${key}:[[:space:]]*(.*)$/\1/p" | head -n 1
+}
+
+controller_addresses() {
+    bluetoothctl list 2>/dev/null | sed -n -E 's/^Controller ([A-Fa-f0-9:]{17}) .*/\1/p'
+}
+
+emit_status() {
+    local is_available=0
+    local enabled=0
+    local active=0
+    local powered=0
+    local discovering=0
+
+    if available; then
+        is_available=1
+    fi
+    if systemctl is-enabled --quiet "$unit" >/dev/null 2>&1; then
+        enabled=1
+    fi
+    if systemctl is-active --quiet "$unit" >/dev/null 2>&1; then
+        active=1
+    fi
+    if truthy "$(adapter_value Powered)"; then
+        powered=1
+    fi
+    if truthy "$(adapter_value Discovering)"; then
+        discovering=1
+    fi
+
+    printf 'available=%s\n' "$is_available"
+    printf 'enabled=%s\n' "$enabled"
+    printf 'active=%s\n' "$active"
+    printf 'powered=%s\n' "$powered"
+    printf 'discovering=%s\n' "$discovering"
+}
+
+device_value() {
+    local mac="$1"
+    local key="$2"
+    bluetoothctl info "$mac" 2>/dev/null | sed -n -E "s/^[[:space:]]*${key}:[[:space:]]*(.*)$/\1/p" | head -n 1
+}
+
+emit_device() {
+    local mac="$1"
+    local fallback_name="${2:-$1}"
+    valid_address "$mac" || return 0
+
+    local name
+    local paired=0
+    local trusted=0
+    local connected=0
+
+    name="$(device_value "$mac" Name)"
+    name="${name:-$fallback_name}"
+    name="${name//$'\t'/ }"
+
+    if truthy "$(device_value "$mac" Paired)"; then paired=1; fi
+    if truthy "$(device_value "$mac" Trusted)"; then trusted=1; fi
+    if truthy "$(device_value "$mac" Connected)"; then connected=1; fi
+
+    printf 'device\t%s\t%s\t%s\t%s\t%s\n' "$mac" "$name" "$paired" "$trusted" "$connected"
+}
+
+emit_devices() {
+    local line
+    local rest
+    local mac
+    local name
+
+    bluetoothctl devices 2>/dev/null | while IFS= read -r line; do
+        case "$line" in
+            Device\ *)
+                rest="${line#Device }"
+                mac="${rest%% *}"
+                name="${rest#"$mac"}"
+                name="${name# }"
+                emit_device "$mac" "$name"
+                ;;
+        esac
+    done
+}
+
+unblock_bluetooth() {
+    if command -v rfkill >/dev/null 2>&1; then
+        rfkill unblock bluetooth >/dev/null 2>&1 || true
+    fi
+
+    local rfkill_dir
+    for rfkill_dir in /sys/class/rfkill/rfkill*; do
+        [ -d "$rfkill_dir" ] || continue
+        [ "$(cat "$rfkill_dir/type" 2>/dev/null || true)" = "bluetooth" ] || continue
+        if [ -w "$rfkill_dir/soft" ]; then
+            printf '0\n' > "$rfkill_dir/soft" 2>/dev/null || true
+        fi
+    done
+}
+
+power_on_controllers() {
+    local first=""
+    local controller
+
+    while IFS= read -r controller; do
+        [ -n "$controller" ] || continue
+        [ -n "$first" ] || first="$controller"
+        bluetoothctl select "$controller" >/dev/null 2>&1 || true
+        bluetoothctl power on >/dev/null 2>&1 || true
+    done < <(controller_addresses)
+
+    if [ -n "$first" ]; then
+        bluetoothctl select "$first" >/dev/null 2>&1 || true
+    fi
+    bluetoothctl power on >/dev/null 2>&1 || true
+}
+
+scan_devices() {
+    local seconds="${BLUETOOTH_SCAN_SECONDS:-10}"
+
+    case "$seconds" in
+        ''|*[!0-9]*) seconds=10 ;;
+    esac
+    if [ "$seconds" -lt 4 ]; then seconds=4; fi
+    if [ "$seconds" -gt 30 ]; then seconds=30; fi
+
+    bluetoothctl scan off >/dev/null 2>&1 || true
+    bluetoothctl --timeout "$seconds" scan on >/dev/null 2>&1 || true
+    bluetoothctl scan off >/dev/null 2>&1 || true
+}
+
+enable_bluetooth() {
+    require_available
+    systemctl unmask "$unit" >/dev/null 2>&1 || true
+    systemctl enable "$unit" >/dev/null
+    if systemd_live; then
+        systemctl start "$unit" >/dev/null
+        unblock_bluetooth
+        power_on_controllers
+        bluetoothctl agent on >/dev/null 2>&1 || true
+        bluetoothctl default-agent >/dev/null 2>&1 || true
+    fi
+}
+
+disable_bluetooth() {
+    require_available
+    if systemd_live; then
+        bluetoothctl scan off >/dev/null 2>&1 || true
+        bluetoothctl power off >/dev/null 2>&1 || true
+    fi
+    systemctl disable "$unit" >/dev/null
+    if systemd_live; then
+        systemctl stop "$unit" >/dev/null
+    fi
+}
+
+case "$action" in
+    status)
+        emit_status
+        ;;
+    enable)
+        enable_bluetooth
+        emit_status
+        ;;
+    disable)
+        disable_bluetooth
+        emit_status
+        ;;
+    scan)
+        enable_bluetooth
+        scan_devices
+        emit_status
+        emit_devices
+        ;;
+    pair-connect)
+        require_available
+        valid_address "$address" || {
+            echo "invalid Bluetooth address" >&2
+            exit 2
+        }
+        enable_bluetooth
+        bluetoothctl pair "$address" >/dev/null 2>&1 || true
+        bluetoothctl trust "$address" >/dev/null 2>&1 || true
+        bluetoothctl connect "$address" >/dev/null
+        emit_status
+        emit_device "$address"
+        ;;
+    connect)
+        require_available
+        valid_address "$address" || {
+            echo "invalid Bluetooth address" >&2
+            exit 2
+        }
+        enable_bluetooth
+        bluetoothctl trust "$address" >/dev/null 2>&1 || true
+        bluetoothctl connect "$address" >/dev/null
+        emit_status
+        emit_device "$address"
+        ;;
+    forget)
+        require_available
+        valid_address "$address" || {
+            echo "invalid Bluetooth address" >&2
+            exit 2
+        }
+        bluetoothctl disconnect "$address" >/dev/null 2>&1 || true
+        bluetoothctl remove "$address" >/dev/null
+        emit_status
+        emit_devices
+        ;;
+    *)
+        echo "usage: $0 [status|enable|disable|scan|pair-connect <mac>|connect <mac>|forget <mac>]" >&2
+        exit 2
+        ;;
+esac
+HELPER
+
+    pi240_install_file_from_stdin /etc/sudoers.d/240mp-bluetooth-control 0440 <<SUDOERS
+${service_user} ALL=(root) NOPASSWD: ${helper}
+SUDOERS
+
+    if command -v visudo >/dev/null 2>&1; then
+        pi240_root visudo -cf /etc/sudoers.d/240mp-bluetooth-control
+    fi
+
+    case "$default_enabled" in
+        1|true|TRUE|yes|YES|on|ON)
+            pi240_root "$helper" enable || true
+            ;;
+        0|false|FALSE|no|NO|off|OFF)
+            pi240_root "$helper" disable || true
+            ;;
+    esac
+}
+
+pi240_install_retro_mount_helper() {
+    local service_user="${1:-mp240}"
+    local helper="${2:-/usr/local/sbin/240mp-retro-mount}"
+
+    pi240_install_file_from_stdin "$helper" 0755 <<'HELPER'
+#!/usr/bin/env bash
+set -euo pipefail
+
+action="${1:-}"
+host="${2:-}"
+share="${3:-}"
+mountpoint_path="${4:-}"
+credentials="${5:-}"
+
+die() {
+    echo "$*" >&2
+    exit 1
+}
+
+valid_name() {
+    [[ "$1" =~ ^[A-Za-z0-9._-]+$ ]]
+}
+
+valid_mountpoint() {
+    case "$1" in
+        /var/lib/240mp/*|/home/*/.local/share/240-MP/*|/tmp/240mp-*|/private/tmp/240mp-*)
+            return 0
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+validate_target() {
+    valid_name "$host" || die "invalid RetroNAS host"
+    valid_name "$share" || die "invalid RetroNAS share"
+    [ -n "$mountpoint_path" ] || die "missing mount point"
+    valid_mountpoint "$mountpoint_path" || die "invalid mount point"
+}
+
+case "$action" in
+    mount)
+        validate_target
+        install -d -m 0755 "$mountpoint_path"
+
+        if mountpoint -q "$mountpoint_path"; then
+            echo "mounted=1"
+            exit 0
+        fi
+
+        uid="${SUDO_UID:-1000}"
+        gid="${SUDO_GID:-1000}"
+        opts="rw,uid=${uid},gid=${gid},iocharset=utf8,noperm,serverino"
+        if [ -n "$credentials" ] && [ "$credentials" != "-" ]; then
+            case "$credentials" in
+                /var/lib/240mp/*|/home/*/.local/share/240-MP/*|/tmp/240mp-*|/private/tmp/240mp-*) ;;
+                *) die "invalid credentials path" ;;
+            esac
+            [ -f "$credentials" ] || die "credentials file not found"
+            opts="${opts},credentials=${credentials}"
+        else
+            opts="${opts},guest"
+        fi
+
+        if mount -t cifs "//$host/$share" "$mountpoint_path" -o "${opts},vers=3.0"; then
+            echo "mounted=1"
+            exit 0
+        fi
+        mount -t cifs "//$host/$share" "$mountpoint_path" -o "${opts},vers=2.1"
+        echo "mounted=1"
+        ;;
+    umount|unmount)
+        [ -n "$mountpoint_path" ] || die "missing mount point"
+        valid_mountpoint "$mountpoint_path" || die "invalid mount point"
+        if mountpoint -q "$mountpoint_path"; then
+            umount "$mountpoint_path"
+        fi
+        echo "mounted=0"
+        ;;
+    status)
+        [ -n "$mountpoint_path" ] || die "missing mount point"
+        valid_mountpoint "$mountpoint_path" || die "invalid mount point"
+        if mountpoint -q "$mountpoint_path"; then
+            echo "mounted=1"
+        else
+            echo "mounted=0"
+        fi
+        ;;
+    *)
+        echo "usage: $0 mount <host> <share> <mountpoint> <credentials|-|empty>" >&2
+        exit 2
+        ;;
+esac
+HELPER
+
+    pi240_install_file_from_stdin /etc/sudoers.d/240mp-retro-mount 0440 <<SUDOERS
+${service_user} ALL=(root) NOPASSWD: ${helper}
+SUDOERS
+
+    if command -v visudo >/dev/null 2>&1; then
+        pi240_root visudo -cf /etc/sudoers.d/240mp-retro-mount
+    fi
 }
 
 pi240_install_ir_support() {
@@ -725,7 +1345,7 @@ IR_LEARN
 
     pi240_install_file_from_stdin /etc/systemd/system/240mp-ir-keymap.service 0644 <<'IR_SERVICE'
 [Unit]
-Description=240-MP IR remote keymap
+Description=CRT Station IR remote keymap
 After=systemd-udev-settle.service
 
 [Service]
@@ -788,7 +1408,7 @@ pi240_install_autostart() {
 
     pi240_install_file_from_stdin "$systemd_service" 0644 <<UNIT
 [Unit]
-Description=240-MP Media Player
+Description=CRT Station Media Player
 After=multi-user.target sound.target
 
 [Service]
@@ -870,7 +1490,7 @@ STOP_HELPER
 
     pi240_install_file_from_stdin /etc/systemd/system/240mp-terminal.service 0644 <<'TERMINAL_UNIT'
 [Unit]
-Description=240-MP exit-to-terminal login shell
+Description=CRT Station exit-to-terminal login shell
 
 [Service]
 Type=idle

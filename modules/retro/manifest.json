@@ -1,0 +1,45 @@
+{
+  "id": "com.240mp.retro",
+  "name": "Game Center",
+  "order": 35,
+  "icon": "assets/images/logo.svg",
+  "entry_point_qml": "views/Root.qml",
+  "settings": [
+    {
+      "key": "enabled",
+      "label": "ENABLED",
+      "type": "toggle",
+      "default": "ON"
+    },
+    {
+      "key": "retronas_host",
+      "label": "RETRONAS ADDRESS",
+      "type": "text",
+      "default": ""
+    },
+    {
+      "key": "retronas_share",
+      "label": "RETRONAS SHARE",
+      "type": "text",
+      "default": "mister"
+    },
+    {
+      "key": "retronas_path",
+      "label": "MISTER ROM PATH",
+      "type": "text",
+      "default": "games"
+    },
+    {
+      "key": "local_path",
+      "label": "LOCAL ROM PATH",
+      "type": "directory_browser",
+      "default": ""
+    },
+    {
+      "key": "refresh_game_cache",
+      "label": "REFRESH GAME LIST",
+      "type": "action",
+      "action_slot": "refresh_game_cache"
+    }
+  ]
+}

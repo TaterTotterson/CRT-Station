@@ -23,12 +23,12 @@ int macMainScreenHeight() {
 void forceWindowFullScreen(void *handle) {
     NSView   *view   = (__bridge NSView *)(void *)handle;
     NSWindow *win    = [view window];
-    if (!win) { NSLog(@"[240-MP] forceWindowFullScreen: no NSWindow"); return; }
+    if (!win) { NSLog(@"[CRT Station] forceWindowFullScreen: no NSWindow"); return; }
 
     NSScreen *screen = win.screen ?: [NSScreen mainScreen];
-    if (!screen) { NSLog(@"[240-MP] forceWindowFullScreen: no NSScreen"); return; }
+    if (!screen) { NSLog(@"[CRT Station] forceWindowFullScreen: no NSScreen"); return; }
 
-    NSLog(@"[240-MP] forceWindowFullScreen: screen.frame = {{%.0f,%.0f},{%.0f,%.0f}}",
+    NSLog(@"[CRT Station] forceWindowFullScreen: screen.frame = {{%.0f,%.0f},{%.0f,%.0f}}",
           screen.frame.origin.x, screen.frame.origin.y,
           screen.frame.size.width, screen.frame.size.height);
 

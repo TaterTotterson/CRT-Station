@@ -1,4 +1,4 @@
-# Building 240-MP
+# Building CRT Station
 
 Most users should use the ready-to-flash Raspberry Pi image for their CRT standard from the latest GitHub release.
 
@@ -77,7 +77,7 @@ Pi settings are stored in:
 
 ## Build A Custom Pi Image
 
-The image builder wraps Raspberry Pi's `pi-gen` arm64 branch, builds 240-MP inside the rootfs, installs it under `/opt/240mp`, enables `240mp.service`, enables the boot screen, and applies the CRT/composite + Argon IR defaults.
+The image builder wraps Raspberry Pi's `pi-gen` arm64 branch, builds CRT Station inside the rootfs, installs it under `/opt/240mp`, enables `240mp.service`, enables the boot screen, and applies the CRT/composite, Bluetooth controller, and Argon IR defaults.
 
 Requirements on your build machine:
 
@@ -135,7 +135,7 @@ For custom audio setups, `mpv_audio_args` can be added beside it. The default co
 
 ### Service Logs
 
-The ready-to-flash image runs 240-MP through `240mp.service`.
+The ready-to-flash image runs CRT Station through `240mp.service`.
 
 ```bash
 journalctl -u 240mp -b

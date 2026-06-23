@@ -158,10 +158,8 @@ FocusScope {
             var subId = detail.subtitleStreams && detail.subtitleStreams[subtitleIdx]
                 ? detail.subtitleStreams[subtitleIdx].id : "0"
 
-            // Persist the picked tracks to Emby/Jellyfin so they survive returning to
-            // this screen, and so a transcode burns the streams the user chose
-            // (the server selects from its stored default, not just inline
-            // params). subtitleStreamID "0" disables subtitles.
+            // Let the backend persist picked tracks when the provider supports
+            // server-side preferences. subtitleStreamID "0" disables subtitles.
             if (detail.partId) {
                 if (audioId) embyBackend.set_audio_stream(audioId, detail.partId)
                 embyBackend.set_subtitle_stream(subId, detail.partId)

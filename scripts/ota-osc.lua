@@ -5,11 +5,26 @@ local hide_timer = nil
 local menu_timer = nil
 local DISPLAY_SECONDS = 7.0
 local MENU_SECONDS = 7.0
+local TEXT_WIDTH_FACTOR = 0.68
 local latest_label = ""
 local menu_visible = false
 
 local function ass_escape(text)
     return tostring(text):gsub("\\", "\\\\"):gsub("{", "\\{"):gsub("}", "\\}")
+end
+
+local function estimated_text_width(text, fs)
+    return math.floor(#tostring(text or "") * fs * TEXT_WIDTH_FACTOR)
+end
+
+local function fit_text(text, max_w, fs)
+    local value = tostring(text or ""):upper()
+    if value == "" then return "" end
+
+    local max_chars = math.floor(max_w / (fs * TEXT_WIDTH_FACTOR))
+    if #value <= max_chars then return value end
+    if max_chars <= 3 then return value:sub(1, math.max(0, max_chars)) end
+    return value:sub(1, max_chars - 3) .. "..."
 end
 
 local function hide()
@@ -61,7 +76,9 @@ local function draw_overlay(label, with_menu)
     local pad_x = math.floor(ww * 0.018)
     local pad_y = math.floor(wh * 0.012)
     local fs = math.max(18, math.floor(wh * 0.065))
-    local box_w = math.min(math.floor(ww * 0.72), math.floor(#label * fs * 0.56 + pad_x * 2))
+    local max_box_w = math.floor(ww * 0.72)
+    local display_label = fit_text(label, max_box_w - pad_x * 2, fs)
+    local box_w = math.min(max_box_w, estimated_text_width(display_label, fs) + pad_x * 2)
     local box_h = math.floor(fs * 1.35 + pad_y * 2)
     local box_x = ww - margin_x - box_w
     local text_x = ww - margin_x - pad_x
@@ -69,7 +86,7 @@ local function draw_overlay(label, with_menu)
     local ass = assdraw.ass_new()
 
     draw_box(ass, box_x, margin_y, box_w, box_h, "&H55&")
-    draw_text(ass, text_x, margin_y + math.floor(box_h / 2), 6, label, fs)
+    draw_text(ass, text_x, margin_y + math.floor(box_h / 2), 6, display_label, fs)
 
     if with_menu then
         local lm = math.floor(ww * 0.12)
@@ -87,7 +104,8 @@ local function draw_overlay(label, with_menu)
 
         draw_box(ass, lm, menu_y, menu_w, menu_h, "&H66&")
         draw_text(ass, lm + math.floor(menu_w * 0.03), row_y, 4, "LIVE TV", title_fs)
-        draw_text(ass, rm - math.floor(menu_w * 0.03), row_y, 6, label, menu_fs)
+        draw_text(ass, rm - math.floor(menu_w * 0.03), row_y, 6,
+                  fit_text(label, math.floor(menu_w * 0.48), menu_fs), menu_fs)
 
         local bx = lm + math.floor(menu_w * 0.03)
         local usable_w = menu_w - math.floor(menu_w * 0.06)

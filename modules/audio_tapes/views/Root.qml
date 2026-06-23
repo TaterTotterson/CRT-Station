@@ -23,6 +23,9 @@ FocusScope {
     property string pendingItemId: ""
     property bool playing: false
     property bool paused: false
+    property bool fastForwarding: false
+    property bool ignoringPreviousTrackExit: false
+    property int fastForwardTargetIndex: -1
     property int visualTick: 0
 
     focus: true
@@ -95,6 +98,9 @@ FocusScope {
 
     function playTrack(index) {
         if (index < 0 || index >= tracks.length) return
+        fastForwardTimer.stop()
+        fastForwarding = false
+        fastForwardTargetIndex = -1
         trackIndex = index
         trackList.currentIndex = index
         var track = currentTrack()
@@ -105,23 +111,91 @@ FocusScope {
     }
 
     function stopDeck(returnToTracks) {
+        cancelFastForward()
         if (mpvController.running)
             mpvController.stop()
         playing = false
         paused = false
         pendingItemId = ""
+        ignoringPreviousTrackExit = false
         if (returnToTracks)
             mode = "tracks"
     }
 
     function nextTrack() {
         if (tracks.length === 0) return
-        playTrack((trackIndex + 1) % tracks.length)
+        var targetIndex = (fastForwarding && fastForwardTargetIndex >= 0)
+            ? (fastForwardTargetIndex + 1) % tracks.length
+            : (trackIndex + 1) % tracks.length
+        if (mode === "deck" && playing && mpvController.running) {
+            startFastForward(targetIndex)
+            return
+        }
+        playTrack(targetIndex)
     }
 
     function previousTrack() {
         if (tracks.length === 0) return
+        if (fastForwarding && fastForwardTargetIndex >= 0) {
+            fastForwardTargetIndex = (fastForwardTargetIndex + tracks.length - 1) % tracks.length
+            return
+        }
+        cancelFastForward()
         playTrack((trackIndex + tracks.length - 1) % tracks.length)
+    }
+
+    function startFastForward(targetIndex) {
+        if (targetIndex < 0 || targetIndex >= tracks.length) return
+
+        if (fastForwarding) {
+            fastForwardTargetIndex = targetIndex
+            return
+        }
+
+        var position = Math.max(0, mpvController.position || 0)
+        var duration = Math.max(0, mpvController.duration || 0)
+        if (duration <= 0 || duration - position < 900) {
+            playTrack(targetIndex)
+            return
+        }
+
+        var remaining = Math.max(900, duration - position)
+        var speed = Math.max(8.0, Math.min(80.0, remaining / 1800.0))
+        var waitMs = Math.max(850, Math.min(5200, Math.floor(remaining / speed) + 650))
+        fastForwarding = true
+        fastForwardTargetIndex = targetIndex
+        pendingItemId = ""
+        paused = false
+        mpvController.setPaused(false)
+        mpvController.setAudioPitchCorrection(false)
+        mpvController.setPlaybackSpeed(speed)
+        fastForwardTimer.interval = waitMs
+        fastForwardTimer.restart()
+    }
+
+    function cancelFastForward() {
+        if (!fastForwarding) return
+        fastForwardTimer.stop()
+        fastForwarding = false
+        fastForwardTargetIndex = -1
+        ignoringPreviousTrackExit = false
+        mpvController.setPlaybackSpeed(1.0)
+        mpvController.setAudioPitchCorrection(true)
+    }
+
+    function finishFastForward() {
+        if (!fastForwarding) return
+        var targetIndex = fastForwardTargetIndex
+        fastForwardTimer.stop()
+        fastForwarding = false
+        fastForwardTargetIndex = -1
+        mpvController.setPlaybackSpeed(1.0)
+        mpvController.setAudioPitchCorrection(true)
+        ignoringPreviousTrackExit = true
+        if (mpvController.running)
+            mpvController.stop()
+        if (targetIndex >= 0 && targetIndex < tracks.length)
+            playTrack(targetIndex)
     }
 
     Keys.onPressed: function(event) {
@@ -265,10 +339,12 @@ FocusScope {
             mode = "deck"
             playing = true
             paused = false
+            ignoringPreviousTrackExit = false
             mpvController.loadAudioAndPlay(url, 0.0, httpHeaderFields || "", track.title || "MIXTAPE")
         }
 
         function onErrorOccurred(message) {
+            ignoringPreviousTrackExit = false
             if (mode === "loading" || mode === "deck") {
                 playing = false
                 mode = "message"
@@ -285,11 +361,23 @@ FocusScope {
         }
 
         function onPlaybackFinishedNaturally(finalPositionMs, finalDurationMs) {
+            if (ignoringPreviousTrackExit)
+                return
+            if (fastForwarding) {
+                finishFastForward()
+                return
+            }
             if (mode === "deck")
                 nextTrack()
         }
 
         function onPlaybackFinished(finalPositionMs, finalDurationMs) {
+            if (ignoringPreviousTrackExit)
+                return
+            if (fastForwarding) {
+                finishFastForward()
+                return
+            }
             if (mode === "deck" && !pendingItemId) {
                 playing = false
                 mode = "tracks"
@@ -297,6 +385,12 @@ FocusScope {
         }
 
         function onPlaybackFailed() {
+            if (ignoringPreviousTrackExit)
+                return
+            if (fastForwarding) {
+                finishFastForward()
+                return
+            }
             if (mode !== "deck") return
             playing = false
             mode = "message"
@@ -305,10 +399,17 @@ FocusScope {
     }
 
     Timer {
-        interval: 80
+        interval: fastForwarding ? 35 : 80
         running: mode === "deck" && playing && !paused
         repeat: true
         onTriggered: visualTick++
+    }
+
+    Timer {
+        id: fastForwardTimer
+        interval: 1800
+        repeat: false
+        onTriggered: finishFastForward()
     }
 
     StaticBackground {
@@ -558,7 +659,7 @@ FocusScope {
                 border.width: 2
 
                 Text {
-                    text: paused ? "PAUSE" : "PLAY"
+                    text: fastForwarding ? "FF >>" : (paused ? "PAUSE" : "PLAY")
                     color: root.primaryColor
                     font.family: root.globalFont
                     anchors.centerIn: parent
@@ -587,7 +688,7 @@ FocusScope {
                     }
 
                     Text {
-                        text: paused ? "II" : (visualTick + index) % 2 === 0 ? "/" : "\\"
+                        text: paused ? "II" : (fastForwarding ? ">>" : ((visualTick + index) % 2 === 0 ? "/" : "\\"))
                         color: root.secondaryColor
                         font.family: root.globalFont
                         anchors.centerIn: parent

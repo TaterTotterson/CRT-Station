@@ -1,6 +1,6 @@
-# Contributing to 240-MP
+# Contributing to CRT Station
 
-Thank you for considering contributing to 240-MP. This fork is focused on a Raspberry Pi 4 composite-to-CRT appliance for Emby/Jellyfin playback with Argon IR remote support. If you have any questions, please create a post in [Discussions > Q&A](https://github.com/TaterTotterson/240-MP-Emby-Jelly/discussions/categories/q-a).
+Thank you for considering contributing to CRT Station. This fork is focused on a Raspberry Pi 4 composite-to-CRT appliance with Argon IR remote support. If you have any questions, please create a post in [Discussions > Q&A](https://github.com/TaterTotterson/240-MP-Emby-Jelly/discussions/categories/q-a).
 
 ## Non-code contributions
 
@@ -24,13 +24,13 @@ The most useful community contributions are often not code, items like the follo
 
 1. **Baseline on remote control as an input device**: All experiences should be built so they can be interacted with via up/down/left/right enter and esc/backspace. More complex inputs should be avoided so users can navigate with the Argon IR remote or a simple keyboard.
 2. **Lay out screens for composite CRT output**: Design layouts and size elements to display well on a CRT TV. Consider overscan when placing elements on screen.
-3. **Keep modules self contained**:  If your module just relies on QML then you can simply add your module in a `/modules/[module name]` directory with a `manifest.json` and 240-MP will pick it up for display.  If your module requires a backend then you'll also need to register it in `/src/main.cpp`.  But other than that please keep all of your module source in a `/src/modules/[module name]` folder.  See [Anatomy of a Module](ARCHITECTURE.md#anatomy-of-a-module) for the full layout.
-4. **Don't add tracking or analytics**: Do not include any mechanisms for tracking or reporting usage to an external source that you maintain.  A module should only ever write details to the local 240-MP configuration directory.  If a module relies on connecting to an API (example: the local Emby/Jellyfin module) then it should only communicate with that API directly.
-5. **Browse & Hand-off**: Think of 240-MP and its modules as a way to browse structured content (either on a filesystem or via an API response) and to hand-off to a purpose built tool for an action (like how it relies on MPV for video playback which is purpose built for that ask).  The approach is to leverage existing, purpose built applications that exist on a system and not bundle everything into 240-MP.
+3. **Keep modules self contained**:  If your module just relies on QML then you can simply add your module in a `/modules/[module name]` directory with a `manifest.json` and CRT Station will pick it up for display.  If your module requires a backend then you'll also need to register it in `/src/main.cpp`.  But other than that please keep all of your module source in a `/src/modules/[module name]` folder.  See [Anatomy of a Module](ARCHITECTURE.md#anatomy-of-a-module) for the full layout.
+4. **Don't add tracking or analytics**: Do not include any mechanisms for tracking or reporting usage to an external source that you maintain.  A module should only ever write details to the local CRT Station configuration directory.  If a module relies on connecting to an API (example: the local Emby/Jellyfin module) then it should only communicate with that API directly.
+5. **Browse & Hand-off**: Think of CRT Station and its modules as a way to browse structured content (either on a filesystem or via an API response) and to hand-off to a purpose built tool for an action (like how it relies on MPV for video playback which is purpose built for that ask).  The approach is to leverage existing, purpose built applications that exist on a system and not bundle everything into CRT Station.
 
 ### Understanding the codebase
 
-240-MP is a **browsing shell** plus a set of **self-contained modules**. The shell (`AppCore`) discovers modules at startup, exposes settings, and routes actions; each module owns its own QML views and, optionally, a C++ backend. When the user plays something, the shell hands off to a purpose-built tool (mpv for video).
+CRT Station is a **browsing shell** plus a set of **self-contained modules**. The shell (`AppCore`) discovers modules at startup, exposes settings, and routes actions; each module owns its own QML views and, optionally, a C++ backend. When the user plays something, the shell hands off to a purpose-built tool (mpv for video).
 
 For the full reference — module anatomy, `manifest.json` setting types, `AppCore` / `registerModule`, backend patterns, and the QML view/navigation contract — see **[ARCHITECTURE.md](ARCHITECTURE.md)**.
 
@@ -72,7 +72,7 @@ Sorry I've not made time yet to work on automated tests so for now testing is ma
 
 ### Note on AI Use
 
-- I used (and will continue to use) AI tools when building 240-MP so leveraging AI tools for development is very much allowed. With that in mind, contributors are expected to own and understand the code they submit and any communication in a PR (including code, code comments, and GitHub comments) must come from a human contributor, not an AI agent acting autonomously.
+- I used (and will continue to use) AI tools when building CRT Station so leveraging AI tools for development is very much allowed. With that in mind, contributors are expected to own and understand the code they submit and any communication in a PR (including code, code comments, and GitHub comments) must come from a human contributor, not an AI agent acting autonomously.
 - Pull requests should include a detailed description that outlines the scope of AI involvement (e.g. which parts were AI-generated and what human testing or review was performed prior to submission). PRs that omit this disclosure may be closed without review.
 
 ### Best-practices checklist

@@ -14,6 +14,8 @@
 #include "AppCore.h"
 #include "modules/local_files/LocalFilesBackend.h"
 #include "modules/emby_jellyfin/EmbyJellyfinBackend.h"
+#include "modules/retro/RetroBackend.h"
+#include "modules/youtube_playlist/YouTubePlaylistBackend.h"
 #include "player/MpvController.h"
 #include "input/InputManager.h"
 #include "api/ControlApiServer.h"
@@ -43,17 +45,22 @@ static QString resolveDataRoot() {
     if (!envRoot.isEmpty())
         return QDir(envRoot).canonicalPath();
 
-    QString path = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
+    // Keep the original storage path so existing Pi images retain settings after
+    // the visible app name changes to CRT Station.
+    QString base = QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation);
+    QString path = base.isEmpty()
+        ? QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)
+        : QDir(base).absoluteFilePath("240-MP");
     QDir().mkpath(path);
     return path;
 }
 
 int main(int argc, char *argv[]) {
     QGuiApplication app(argc, argv);
-    app.setApplicationName("240-MP");
-    app.setApplicationVersion("2026.06.22.1");
+    app.setApplicationName("CRT Station");
+    app.setApplicationVersion("2026.06.23.1");
 
-    // Hide cursor — 240-MP is keyboard-only so the cursor serves no purpose.
+    // Hide cursor — CRT Station is keyboard-only so the cursor serves no purpose.
     // On Linux, only hide on headless EGLFS (not desktop X11/Wayland sessions).
 #ifdef Q_OS_LINUX
     if (qgetenv("DISPLAY").isEmpty() && qgetenv("WAYLAND_DISPLAY").isEmpty())
@@ -79,9 +86,11 @@ int main(int argc, char *argv[]) {
     AppCore             appCore(appRoot, dataRoot);
     LocalFilesBackend   localFiles(appRoot, dataRoot);
     EmbyJellyfinBackend embyBackend(appRoot, dataRoot);
+    RetroBackend        retroBackend(appRoot, dataRoot);
+    YouTubePlaylistBackend youtubePlaylistBackend(appRoot, dataRoot);
     MpvController       mpvController(appRoot, &appCore);
     InputManager        inputManager(dataRoot);
-    ControlApiServer    controlApi(&mpvController);
+    ControlApiServer    controlApi(&mpvController, &embyBackend, &retroBackend);
 
     controlApi.startFromEnvironment();
 
@@ -96,6 +105,9 @@ int main(int argc, char *argv[]) {
     QQmlContext *ctx = engine.rootContext();
     appCore.registerModule("com.240mp.local_files",  "localFilesBackend",  &localFiles,  ctx);
     appCore.registerModule("com.240mp.emby_jellyfin","embyBackend",        &embyBackend, ctx);
+    appCore.registerModule("com.240mp.retro",        "retroBackend",       &retroBackend, ctx);
+    appCore.registerModule("com.240mp.youtube_playlist",
+                           "youtubePlaylistBackend", &youtubePlaylistBackend, ctx);
 
     ctx->setContextProperty("appCore",       &appCore);
     ctx->setContextProperty("mpvController", &mpvController);
@@ -119,6 +131,9 @@ int main(int argc, char *argv[]) {
 
     QObject *rootObject = engine.rootObjects().first();
 
+    QObject::connect(&inputManager, &InputManager::homeRequested,
+                     &retroBackend, &RetroBackend::stop_game,
+                     Qt::QueuedConnection);
     QObject::connect(&inputManager, &InputManager::homeRequested,
                      rootObject, [rootObject]() {
         QMetaObject::invokeMethod(rootObject, "goHome", Qt::QueuedConnection);

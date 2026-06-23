@@ -6,10 +6,11 @@ TARGET_DIR="${ROOTFS_DIR}/opt/240mp-src"
 PROFILE="${PI240_IMAGE_PROFILE:-crt-ntsc}"
 ENABLE_IR="${PI240_ENABLE_IR:-1}"
 IR_GPIO_PIN="${PI240_IR_GPIO_PIN:-23}"
+ENABLE_BLUETOOTH="${PI240_ENABLE_BLUETOOTH:-1}"
 ENABLE_BOOT_SPLASH="${PI240_ENABLE_BOOT_SPLASH:-1}"
 
 if [ ! -d "$SOURCE_DIR" ]; then
-    echo "240-MP source directory not found: $SOURCE_DIR" >&2
+        echo "CRT Station source directory not found: $SOURCE_DIR" >&2
     echo "Set PI240_SOURCE_DIR or use scripts/build-pi-image.sh." >&2
     exit 1
 fi
@@ -34,13 +35,14 @@ install -m 0755 "$SOURCE_DIR/scripts/lib/pi-setup.sh" "${ROOTFS_DIR}/tmp/240mp-p
     printf 'PI240_ENABLE_IR=%q\n' "$ENABLE_IR"
     printf 'PI240_IR_GPIO_PIN=%q\n' "$IR_GPIO_PIN"
     printf 'PI240_IR_PROTOCOL=%q\n' "${PI240_IR_PROTOCOL:-nec}"
+    printf 'PI240_ENABLE_BLUETOOTH=%q\n' "$ENABLE_BLUETOOTH"
     printf 'PI240_ENABLE_BOOT_SPLASH=%q\n' "$ENABLE_BOOT_SPLASH"
 } > "${ROOTFS_DIR}/tmp/240mp-image.env"
 
 if [ "$PROFILE" != "none" ]; then
     SNIPPET="${SUBSTAGE_DIR}/files/config-${PROFILE}.txt"
     if [ ! -f "$SNIPPET" ]; then
-        echo "Unknown 240-MP display profile: $PROFILE" >&2
+        echo "Unknown CRT Station display profile: $PROFILE" >&2
         echo "Expected one of: hdmi, crt-ntsc, crt-pal, none" >&2
         exit 1
     fi
@@ -57,7 +59,7 @@ if [ "$PROFILE" != "none" ]; then
     touch "$CONFIG_TXT"
 
     {
-        printf '\n# --- 240-MP display profile: %s ---\n' "$PROFILE"
+        printf '\n# --- CRT Station display profile: %s ---\n' "$PROFILE"
         cat "$SNIPPET"
     } >> "$CONFIG_TXT"
 fi
@@ -75,7 +77,7 @@ if [ "$ENABLE_IR" = "1" ]; then
     touch "$CONFIG_TXT"
 
     {
-        printf '\n# --- 240-MP IR remote receiver ---\n'
+        printf '\n# --- CRT Station IR remote receiver ---\n'
         printf 'dtoverlay=gpio-ir,gpio_pin=%s\n' "$IR_GPIO_PIN"
     } >> "$CONFIG_TXT"
 fi

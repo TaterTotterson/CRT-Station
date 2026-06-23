@@ -18,7 +18,7 @@ cleanup() {
     if [ -n "$SELF_COPY" ]; then
         rm -f "$SELF_COPY"
     fi
-    # The initial updater process is launched by 240-MP, so it lives inside
+    # The initial updater process is launched by CRT Station, so it lives inside
     # 240mp.service and is killed when the app stops. Only the detached
     # transient updater may clear the flag; otherwise 240mp-stop sees a normal
     # service stop as a crash and starts the terminal login over the update.
@@ -194,6 +194,8 @@ pi240_install_launcher "$INSTALL_PREFIX" /usr/local/bin/240mp
 pi240_install_autostart "$SERVICE_USER" /usr/local/bin/240mp "/etc/systemd/system/${SERVICE_NAME}" "$SERVICE_HOME"
 pi240_install_update_helper "$SERVICE_USER" /usr/local/sbin/240mp-update "$INSTALL_PREFIX/share/240mp/scripts/240mp-update"
 pi240_install_ssh_control "$SERVICE_USER" /usr/local/sbin/240mp-ssh-control
+pi240_install_bluetooth_control "$SERVICE_USER" /usr/local/sbin/240mp-bluetooth-control
+pi240_install_retro_mount_helper "$SERVICE_USER" /usr/local/sbin/240mp-retro-mount
 pi240_auto_force_composite_video
 if [ "${MP240_ENABLE_IR:-1}" = "1" ]; then
     pi240_install_ir_support "${MP240_IR_PROTOCOL:-nec}" /etc/rc_keymaps/240mp.toml "${MP240_IR_GPIO_PIN:-23}"
@@ -209,4 +211,4 @@ systemctl start "$SERVICE_NAME"
 SERVICE_STOPPED=0
 rm -f "$UPDATE_FLAG"
 
-log "Updated 240-MP to $VERSION"
+log "Updated CRT Station to $VERSION"

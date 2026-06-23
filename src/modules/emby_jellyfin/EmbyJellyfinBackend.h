@@ -8,6 +8,7 @@
 #include <QJsonArray>
 #include <QJsonValue>
 #include <QUrl>
+#include <QXmlStreamReader>
 #include <functional>
 
 class EmbyJellyfinBackend : public QObject {
@@ -21,9 +22,13 @@ public:
     Q_INVOKABLE QString get_active_user_name();
     Q_INVOKABLE QString get_active_server_name();
     Q_INVOKABLE QString get_saved_server_url();
+    Q_INVOKABLE QString get_media_provider();
 
     Q_INVOKABLE void login(const QString &serverUrl, const QString &username,
                            const QString &password);
+    Q_INVOKABLE void start_plex_pin_login();
+    Q_INVOKABLE void poll_plex_pin_login();
+    Q_INVOKABLE void select_plex_server(const QString &machineIdentifier);
     Q_INVOKABLE void logout();
 
     Q_INVOKABLE void load_libraries();
@@ -67,9 +72,21 @@ public:
     Q_INVOKABLE void getLibraries();
     Q_INVOKABLE void getVideoQualities();
     Q_INVOKABLE void get_resume_playback_options();
+    Q_INVOKABLE void api_search_media(const QString &requestId,
+                                      const QString &query,
+                                      const QStringList &types,
+                                      int limit);
+    Q_INVOKABLE void api_prepare_media_launch(const QString &requestId,
+                                              const QString &ratingKey,
+                                              const QString &kind);
+
+public slots:
+    void onSettingChanged(const QString &moduleId, const QString &key, const QVariant &value);
 
 signals:
     void authSuccess();
+    void plexPinReady(const QString &code, const QString &linkUrl);
+    void plexServersLoaded(const QVariant &servers);
     void logoutComplete();
     void authStateChanged();
 
@@ -100,13 +117,23 @@ signals:
 
     void dynamicOptionsReady(const QString &key, const QVariant &options);
     void errorOccurred(const QString &message);
+    void apiSearchResultsReady(const QString &requestId, const QVariantList &results);
+    void apiLaunchStreamReady(const QString &requestId,
+                              const QVariantMap &launch,
+                              const QString &url,
+                              const QString &httpHeaderFields);
+    void apiRequestFailed(const QString &requestId, const QString &message);
 
 private:
     QJsonObject loadAuth() const;
     void saveAuth(const QJsonObject &auth) const;
+    QJsonObject loadPlexAuth() const;
+    void savePlexAuth(const QJsonObject &auth) const;
     QJsonObject loadConfig() const;
 
     QString clientId() const;
+    QString plexClientId() const;
+    QString mediaProvider() const;
     QString serverUrl() const;
     QString accessToken() const;
     QString userId() const;
@@ -118,6 +145,9 @@ private:
     static QString msToDisplay(int ms);
     static qint64 ticksToMs(const QJsonValue &ticks);
     static qint64 msToTicks(int ms);
+    static QString plexAttr(const QXmlStreamAttributes &attrs, const QString &name);
+    static int plexIntAttr(const QXmlStreamAttributes &attrs, const QString &name,
+                           int fallback = 0);
 
     QNetworkRequest apiRequest(const QUrl &url, const QString &token = {}) const;
     QNetworkReply *apiGet(const QUrl &url, const QString &token = {});
@@ -128,6 +158,35 @@ private:
     QUrl apiUrl(const QString &path) const;
     QUrl itemListUrl(const QString &parentId, const QString &includeTypes,
                      bool recursive = true) const;
+    QNetworkRequest plexTvRequest(const QUrl &url, const QString &token = {}) const;
+    QNetworkReply *plexTvGet(const QUrl &url, const QString &token = {});
+    QNetworkReply *plexTvPostForm(const QUrl &url, const QByteArray &body,
+                                  const QString &token = {});
+    QNetworkRequest plexServerRequest(const QUrl &url) const;
+    QNetworkReply *plexServerGet(const QUrl &url);
+    QUrl plexApiUrl(const QString &path) const;
+    QUrl plexUrlWithToken(QUrl url) const;
+    QString plexAbsoluteUrl(const QString &pathOrUrl) const;
+    QString plexServerUrl() const;
+    QString plexToken() const;
+    void finishPlexLogin(const QString &token);
+    void fetchPlexServers(const QString &token);
+    void saveSelectedPlexServer(const QVariantMap &server);
+    QVariantList parsePlexLibraries(const QByteArray &body, bool musicOnly = false) const;
+    QVariantList parsePlexItems(const QByteArray &body) const;
+    QVariantMap parsePlexDetail(const QByteArray &body) const;
+    QVariantMap formatPlexItem(const QXmlStreamAttributes &attrs) const;
+    QVariantMap formatPlexMusicAlbum(const QXmlStreamAttributes &attrs) const;
+    void plexLoadLibraries();
+    void plexLoadMusicLibraries();
+    void plexLoadMusicAlbums(const QString &sectionId);
+    void plexLoadMusicTracks(const QString &albumId);
+    void plexLoadLibraryAll(const QString &sectionId);
+    void plexLoadChildren(const QString &ratingKey);
+    void plexLoadItemDetail(const QString &ratingKey);
+    void plexBuildStreamUrl(const QString &ratingKey, const QString &partKey);
+    void plexBuildAudioStreamUrl(const QString &ratingKey, const QString &partKey);
+    void plexLoadNextEpisode(const QString &currentRatingKey);
     void requestPlaybackInfo(const QString &ratingKey, const QString &partKey,
                              const QString &sessionId, const QString &audioId,
                              const QString &subtitleId, int offsetMs,
@@ -164,8 +223,18 @@ private:
     QVariantMap formatItem(const QJsonObject &item) const;
     QVariantMap formatMusicAlbum(const QJsonObject &item) const;
     QVariantMap formatMusicTrack(const QJsonObject &item) const;
+    QVariantMap formatApiMediaResult(const QVariantMap &item) const;
     QVariantMap buildItemDetail(const QJsonObject &item) const;
     QVariantList formatItems(const QJsonArray &items) const;
+    QVariantList apiFilterMediaResults(const QVariantList &items,
+                                       const QStringList &types,
+                                       int limit) const;
+    void apiPrepareDetailPlayback(const QString &requestId,
+                                  const QVariantMap &detail);
+    void apiPrepareShowPlayback(const QString &requestId,
+                                const QString &ratingKey);
+    void apiPreparePlexShowPlayback(const QString &requestId,
+                                    const QString &ratingKey);
     void fetchServerInfoThenFinishLogin(QJsonObject auth);
     void fetchEpisodesForSeries(const QString &seriesId,
                                 std::function<void(QJsonArray)> callback);
@@ -178,6 +247,11 @@ private:
     QString m_dataRoot;
     QNetworkAccessManager *m_nam = nullptr;
     mutable QString m_clientId;
+    mutable QString m_plexClientId;
+    int m_plexPinId = 0;
+    QString m_plexPinCode;
+    QString m_pendingPlexToken;
+    QVariantList m_pendingPlexServers;
     int m_liveTvRequestSerial = 0;
     QString m_liveTvItemId;
     QString m_liveTvMediaSourceId;

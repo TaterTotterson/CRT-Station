@@ -1,18 +1,20 @@
-# Install 240-MP
+# Install CRT Station
 
-240-MP is meant to be used as a ready-to-flash Raspberry Pi 4 appliance image for a CRT over composite video.
+CRT Station is meant to be used as a ready-to-flash Raspberry Pi 4 appliance image for a CRT over composite video.
 
 The release images are built for:
 
 - Raspberry Pi 4
 - Composite video output to a CRT, with separate NTSC and PAL image assets
-- Emby/Jellyfin media servers
+- Emby/Jellyfin or Plex media libraries
+- HDHomeRun OTA tuners
+- YouTube playlists
+- RetroNAS/MiSTer ROM shares
+- Bluetooth controllers
 - Argon IR remote support
 - GPIO IR receiver on GPIO23, physical pin 16
-- Boot screen and automatic launch straight into 240-MP
+- Boot screen and automatic launch straight into CRT Station
 - SSH debugging
-
-There is no Plex support in this fork.
 
 ## Flash the ready-to-flash image
 
@@ -23,7 +25,7 @@ There is no Plex support in this fork.
 5. Connect the Pi to the CRT using composite video.
 6. Boot the Pi.
 
-The image boots directly into 240-MP. The default login is `tater` / `pi` for SSH and recovery access.
+The image boots directly into CRT Station. The default login is `tater` / `pi` for SSH and recovery access.
 
 If this image will leave your own network, build a custom image with a stronger password first.
 
@@ -61,9 +63,23 @@ Then copy the printed scancodes into `/etc/rc_keymaps/240mp.toml` and reload:
 sudo systemctl restart 240mp-ir-keymap.service
 ```
 
+### Bluetooth Controllers
+
+The Pi image includes BlueZ and a Settings screen helper for Bluetooth controller pairing.
+
+1. Put the controller in pairing mode.
+2. Open Settings.
+3. Turn Bluetooth on if needed.
+4. Select Scan Controllers.
+5. Select the controller to pair, trust, and connect it.
+
+After pairing, the controller appears as a normal Linux input device. CRT Station uses SDL for menu navigation, and Game Center launches RetroArch so the same controller can be mapped or auto-detected there.
+
+Use Settings, then Map Controller, to record a global controller layout. The mapper writes CRT Station navigation bindings and RetroArch player-one RetroPad bindings. RetroArch cores share that global layout.
+
 ### Boot And Recovery
 
-The image shows the 240-MP boot screen and starts the app automatically.
+The image shows the CRT Station boot screen and starts the app automatically.
 
 SSH is enabled by default. The Settings screen can toggle SSH on or off.
 
@@ -79,26 +95,60 @@ To return to the app:
 sudo systemctl start 240mp
 ```
 
-## Emby/Jellyfin Setup
+## Video On Demand Setup
 
-1. Boot into 240-MP.
-2. Open the Video on Demand module.
-3. Enter your local Emby or Jellyfin server URL.
-4. Sign in.
-5. Choose the libraries you want shown on the CRT UI.
+### Emby/Jellyfin
+
+1. Boot into CRT Station.
+2. Open Settings, then Video on Demand.
+3. Set Provider to `EMBY/JELLYFIN`.
+4. Open the Video on Demand module.
+5. Enter your local Emby or Jellyfin server URL.
+6. Sign in.
+7. Choose the libraries you want shown on the CRT UI.
+
+### Plex
+
+1. Boot into CRT Station.
+2. Open Settings, then Video on Demand.
+3. Set Provider to `PLEX`.
+4. Open the Video on Demand module.
+5. On another device, open `https://plex.tv/link`.
+6. Enter the code shown on the CRT.
+7. Select your Plex server if more than one is available.
+
+The Mixtapes module uses the same selected media provider as Video on Demand.
 
 ## Over The Air Setup
 
-1. Add the HDHomeRun tuner to Emby or Jellyfin Live TV first.
-2. Confirm the server can play Live TV channels.
-3. Sign in to the same server from 240-MP.
+1. Connect the HDHomeRun tuner to the same network as the Raspberry Pi.
+2. Open Settings, then Over The Air.
+3. Enter the HDHomeRun IP address.
 4. Open the Over The Air module.
 
-The OTA module does not scan for HDHomeRun devices directly. It uses Emby/Jellyfin Live TV channel and playback APIs so the server can handle tuner sessions and transcoding.
+The OTA module connects directly to the HDHomeRun and opens into TV playback without a guide screen. Up/down changes channels while video is playing.
 
-240-MP supports Emby and Jellyfin only. Plex is not supported.
+## Public Access Setup
 
-## Update An Existing 240-MP Image
+1. Open the Public Access module.
+2. Enter a public YouTube playlist URL or just the playlist `list` code.
+3. Pick a video from the VHS-style list.
+
+The saved playlist loads automatically on later launches. The Pi image installs `yt-dlp` so mpv can stream YouTube videos directly. Public Access defaults to 360p for reliable CRT/Pi playback; change Quality in Settings if needed.
+
+## Game Center Setup
+
+1. Set up RetroNAS with the MiSTer share enabled.
+2. Put ROMs in the MiSTer `games` folder layout, for example `games/NES`, `games/Genesis`, or `games/PSX`.
+3. Open the Game Center module.
+4. Enter the RetroNAS host, share, and path. Defaults are `retronas.local`, `mister`, and `games`.
+5. Enter a username and password if the share is not guest-accessible.
+
+The Pi image installs RetroArch and tries to install the supported libretro cores automatically. The module only shows systems that have both a ROM folder and an installed core. Games launch directly into RetroArch; press Home on the remote to stop the game and return to the CRT Station menu.
+
+Bluetooth pairing only connects the controller. Button layout is handled by the global controller mapper/RetroArch input mapping layer.
+
+## Update An Existing CRT Station Image
 
 From SSH:
 
@@ -112,7 +162,7 @@ Then reboot:
 sudo reboot
 ```
 
-Settings and Emby/Jellyfin sign-in data are kept during app updates.
+Settings and media-provider sign-in data are kept during app updates.
 
 ## Build A Custom Image
 
@@ -158,10 +208,11 @@ Useful image build options:
 | `PI_FIRST_USER_PASS` | `pi` | Password for the normal login user |
 | `PI_FIRST_USER_PUBKEY` | unset | SSH public key string or path to a `.pub` file |
 | `PI_ENABLE_SSH` | `1` | Enable SSH in the image |
+| `PI_ENABLE_BLUETOOTH` | `1` | Enable Bluetooth controller support in the image |
 | `PI_ENABLE_IR` | `1` | Enable GPIO IR receiver support |
 | `PI_IR_GPIO_PIN` | `23` | GPIO pin used by the IR receiver data line |
 | `PI_IR_PROTOCOL` | `nec` | IR protocol loaded by `ir-keytable` |
-| `PI_ENABLE_BOOT_SPLASH` | `1` | Show the 240-MP boot screen |
+| `PI_ENABLE_BOOT_SPLASH` | `1` | Show the CRT Station boot screen |
 
 The finished `.img.xz` lands in:
 
@@ -171,7 +222,7 @@ The finished `.img.xz` lands in:
 
 ## Local Control API
 
-240-MP starts a small HTTP playback-control API with the app. By default it listens on all network interfaces at port `24024`:
+CRT Station starts a small HTTP playback-control API with the app. By default it listens on all network interfaces at port `24024`:
 
 ```bash
 curl http://240mp.local:24024/api/v1/status
@@ -192,6 +243,18 @@ POST /api/v1/player/volume-up
 POST /api/v1/player/volume-down
 POST /api/v1/player/mute
 POST /api/v1/player/key           {"key": "LEFT", "repeat": 1}
+POST /api/v1/library/search       {"query": "mario", "types": ["game"], "limit": 5}
+POST /api/v1/library/launch       {"id": "game:nes:ROM_PATH"}
+```
+
+`/api/v1/library/search` can search Video on Demand and Game Center. `types` may include `movie`, `show`, `episode`, `video`, and `game`. Each result includes an `id`; pass that exact `id` to `/api/v1/library/launch`.
+
+Example:
+
+```bash
+curl -sS http://240mp.local:24024/api/v1/library/search \
+  -H 'Content-Type: application/json' \
+  -d '{"query":"star wars","types":["movie","show"],"limit":5}'
 ```
 
 Optional runtime environment variables:

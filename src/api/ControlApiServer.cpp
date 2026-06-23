@@ -1,15 +1,23 @@
 #include "ControlApiServer.h"
 
+#include "../modules/emby_jellyfin/EmbyJellyfinBackend.h"
+#include "../modules/retro/RetroBackend.h"
 #include "../player/MpvController.h"
 
 #include <QCoreApplication>
 #include <QJsonDocument>
+#include <QJsonArray>
 #include <QJsonValue>
+#include <QPointer>
+#include <QTimer>
 #include <QTcpServer>
 #include <QTcpSocket>
 #include <QUrl>
 #include <QDebug>
+#include <QUuid>
+#include <QVariantList>
 #include <algorithm>
+#include <memory>
 
 namespace {
 constexpr qsizetype MaxHeaderBytes = 16 * 1024;
@@ -25,6 +33,7 @@ QByteArray statusText(int statusCode) {
     case 405: return "Method Not Allowed";
     case 409: return "Conflict";
     case 413: return "Payload Too Large";
+    case 504: return "Gateway Timeout";
     default: return "Internal Server Error";
     }
 }
@@ -40,12 +49,32 @@ double jsonDouble(const QJsonObject &obj, const char *key, double fallback) {
 }
 } // namespace
 
-ControlApiServer::ControlApiServer(MpvController *player, QObject *parent)
+ControlApiServer::ControlApiServer(MpvController *player,
+                                   EmbyJellyfinBackend *mediaBackend,
+                                   RetroBackend *retroBackend,
+                                   QObject *parent)
     : QObject(parent)
     , m_player(player)
+    , m_mediaBackend(mediaBackend)
+    , m_retroBackend(retroBackend)
     , m_server(new QTcpServer(this))
+    , m_apiTimelineTimer(new QTimer(this))
 {
     connect(m_server, &QTcpServer::newConnection, this, &ControlApiServer::onNewConnection);
+    m_apiTimelineTimer->setInterval(10000);
+    connect(m_apiTimelineTimer, &QTimer::timeout, this, [this]() {
+        sendApiTimeline(QStringLiteral("playing"));
+    });
+    if (m_player) {
+        connect(m_player, &MpvController::playbackFinished, this,
+                &ControlApiServer::stopApiTimeline);
+        connect(m_player, &MpvController::playbackFinishedNaturally, this,
+                &ControlApiServer::stopApiTimeline);
+        connect(m_player, &MpvController::playbackFailed, this, [this]() {
+            stopApiTimeline(m_player ? m_player->position() : 0,
+                            m_player ? m_player->duration() : 0);
+        });
+    }
 }
 
 bool ControlApiServer::startFromEnvironment() {
@@ -187,6 +216,18 @@ void ControlApiServer::handleRequest(QTcpSocket *socket, const HttpRequest &requ
         return;
     }
 
+    if (request.path == QStringLiteral("/api/v1/library/search") ||
+        request.path == QStringLiteral("/api/v1/app/search")) {
+        handleSearchRequest(socket, request);
+        return;
+    }
+
+    if (request.path == QStringLiteral("/api/v1/library/launch") ||
+        request.path == QStringLiteral("/api/v1/app/launch")) {
+        handleLaunchRequest(socket, request);
+        return;
+    }
+
     if (request.path == QStringLiteral("/api/v1/player/stop")) {
         m_player->stop();
         writeJson(socket, 200, {{"ok", true}, {"status", playbackStatus()}});
@@ -325,7 +366,8 @@ QJsonObject ControlApiServer::playbackStatus() const {
             {"paused", m_player && m_player->paused()},
             {"position_ms", m_player ? m_player->position() : 0},
             {"duration_ms", m_player ? m_player->duration() : 0},
-            {"playlist_pos", m_player ? m_player->playlistPos() : -1}
+            {"playlist_pos", m_player ? m_player->playlistPos() : -1},
+            {"game_running", m_retroBackend && m_retroBackend->isRunning()}
         }}
     };
 }
@@ -343,6 +385,173 @@ QJsonObject ControlApiServer::parseBodyObject(const HttpRequest &request, bool &
 
     ok = true;
     return doc.object();
+}
+
+void ControlApiServer::handleSearchRequest(QTcpSocket *socket, const HttpRequest &request) {
+    bool ok = false;
+    const QJsonObject body = parseBodyObject(request, ok);
+    if (!ok) {
+        writeJson(socket, 400, {{"ok", false}, {"error", "invalid_json"}});
+        return;
+    }
+
+    const QString query = body.value(QStringLiteral("query")).toString().trimmed();
+    if (query.isEmpty()) {
+        writeJson(socket, 400, {{"ok", false}, {"error", "missing_query"}});
+        return;
+    }
+
+    const QStringList types = requestedTypes(body);
+    const int limit = std::max(1, std::min(jsonInt(body, "limit", 10), 50));
+    QVariantList localResults;
+    if (wantsGames(types) && m_retroBackend)
+        localResults = m_retroBackend->api_search_games(query, limit);
+
+    auto writeResults = [this, socket, query, limit](QVariantList results, const QString &warning = {}) {
+        while (results.size() > limit)
+            results.removeLast();
+
+        QJsonObject response{
+            {"ok", true},
+            {"query", query},
+            {"results", QJsonArray::fromVariantList(results)}
+        };
+        if (!warning.isEmpty())
+            response[QStringLiteral("warning")] = warning;
+        writeJson(socket, 200, response);
+    };
+
+    if (!wantsMedia(types) || !m_mediaBackend) {
+        writeResults(localResults);
+        return;
+    }
+
+    const QString requestId = QUuid::createUuid().toString(QUuid::WithoutBraces);
+    QPointer<QTcpSocket> safeSocket(socket);
+    auto done = std::make_shared<bool>(false);
+
+    auto finish = [this, safeSocket, done](int statusCode, const QJsonObject &response) {
+        if (*done || !safeSocket)
+            return;
+        *done = true;
+        writeJson(safeSocket, statusCode, response);
+    };
+
+    connect(m_mediaBackend, &EmbyJellyfinBackend::apiSearchResultsReady, socket,
+            [=](const QString &finishedRequestId, const QVariantList &mediaResults) {
+        if (finishedRequestId != requestId || *done)
+            return;
+
+        QVariantList results = mediaResults;
+        for (const QVariant &v : localResults)
+            results.append(v);
+        while (results.size() > limit)
+            results.removeLast();
+
+        finish(200, QJsonObject{
+            {"ok", true},
+            {"query", query},
+            {"results", QJsonArray::fromVariantList(results)}
+        });
+    });
+
+    connect(m_mediaBackend, &EmbyJellyfinBackend::apiRequestFailed, socket,
+            [=](const QString &finishedRequestId, const QString &message) {
+        if (finishedRequestId != requestId || *done)
+            return;
+
+        QVariantList results = localResults;
+        while (results.size() > limit)
+            results.removeLast();
+        finish(200, QJsonObject{
+            {"ok", true},
+            {"query", query},
+            {"warning", message},
+            {"results", QJsonArray::fromVariantList(results)}
+        });
+    });
+
+    QTimer::singleShot(12000, socket, [=]() {
+        if (*done)
+            return;
+        QVariantList results = localResults;
+        while (results.size() > limit)
+            results.removeLast();
+        finish(504, QJsonObject{
+            {"ok", false},
+            {"error", "search_timeout"},
+            {"query", query},
+            {"results", QJsonArray::fromVariantList(results)}
+        });
+    });
+
+    m_mediaBackend->api_search_media(requestId, query, types, limit);
+}
+
+void ControlApiServer::handleLaunchRequest(QTcpSocket *socket, const HttpRequest &request) {
+    bool ok = false;
+    QJsonObject body = parseBodyObject(request, ok);
+    if (!ok) {
+        writeJson(socket, 400, {{"ok", false}, {"error", "invalid_json"}});
+        return;
+    }
+
+    if (body.value(QStringLiteral("result")).isObject()) {
+        const QJsonObject result = body.value(QStringLiteral("result")).toObject();
+        if (!body.contains(QStringLiteral("id")) && result.contains(QStringLiteral("id")))
+            body[QStringLiteral("id")] = result.value(QStringLiteral("id"));
+        if (!body.contains(QStringLiteral("module")) && result.contains(QStringLiteral("module")))
+            body[QStringLiteral("module")] = result.value(QStringLiteral("module"));
+        if (!body.contains(QStringLiteral("kind")) && result.contains(QStringLiteral("kind")))
+            body[QStringLiteral("kind")] = result.value(QStringLiteral("kind"));
+        if (!body.contains(QStringLiteral("rating_key")) && result.contains(QStringLiteral("rating_key")))
+            body[QStringLiteral("rating_key")] = result.value(QStringLiteral("rating_key"));
+        if (!body.contains(QStringLiteral("system_id")) && result.contains(QStringLiteral("system_id")))
+            body[QStringLiteral("system_id")] = result.value(QStringLiteral("system_id"));
+        if (!body.contains(QStringLiteral("path")) && result.contains(QStringLiteral("path")))
+            body[QStringLiteral("path")] = result.value(QStringLiteral("path"));
+    }
+
+    const QString id = body.value(QStringLiteral("id")).toString();
+    if (id.startsWith(QStringLiteral("vod:"))) {
+        const QStringList parts = id.split(':');
+        if (parts.size() >= 3) {
+            launchMedia(socket, percentDecode(parts.mid(2).join(':')), parts.at(1));
+            return;
+        }
+    }
+    if (id.startsWith(QStringLiteral("game:"))) {
+        const QStringList parts = id.split(':');
+        if (parts.size() >= 3) {
+            launchGame(socket, parts.at(1), percentDecode(parts.mid(2).join(':')));
+            return;
+        }
+    }
+
+    QString module = body.value(QStringLiteral("module")).toString().trimmed().toLower();
+    module.replace('-', '_');
+    module.replace(' ', '_');
+
+    if (module == QStringLiteral("vod") || module == QStringLiteral("video") ||
+        module == QStringLiteral("video_on_demand")) {
+        const QString ratingKey = body.value(QStringLiteral("rating_key")).toString(
+            body.value(QStringLiteral("ratingKey")).toString());
+        const QString kind = body.value(QStringLiteral("kind")).toString(
+            body.value(QStringLiteral("type")).toString(QStringLiteral("movie")));
+        launchMedia(socket, ratingKey, kind);
+        return;
+    }
+
+    if (module == QStringLiteral("game") || module == QStringLiteral("games") ||
+        module == QStringLiteral("game_center")) {
+        launchGame(socket,
+                   body.value(QStringLiteral("system_id")).toString(
+                       body.value(QStringLiteral("systemId")).toString()),
+                   body.value(QStringLiteral("path")).toString());
+        return;
+    }
+
+    writeJson(socket, 400, {{"ok", false}, {"error", "unsupported_launch_target"}});
 }
 
 QString ControlApiServer::normalizedKey(const QString &key) const {
@@ -387,6 +596,246 @@ QString ControlApiServer::normalizedKey(const QString &key) const {
 void ControlApiServer::pressKey(const QString &key, int repeat) {
     for (int i = 0; i < repeat; ++i)
         m_player->sendKey(key);
+}
+
+QStringList ControlApiServer::requestedTypes(const QJsonObject &body) const {
+    QStringList types;
+    const QJsonValue typeValue = body.value(QStringLiteral("type"));
+    if (typeValue.isString())
+        types << typeValue.toString();
+
+    const QJsonValue typesValue = body.value(QStringLiteral("types"));
+    if (typesValue.isArray()) {
+        const QJsonArray arr = typesValue.toArray();
+        for (const QJsonValue &v : arr) {
+            if (v.isString())
+                types << v.toString();
+        }
+    } else if (typesValue.isString()) {
+        types << typesValue.toString();
+    }
+
+    QStringList normalized;
+    for (QString type : types) {
+        type = type.trimmed().toLower();
+        type.replace('-', '_');
+        type.replace(' ', '_');
+        if (type == QStringLiteral("games"))
+            type = QStringLiteral("game");
+        else if (type == QStringLiteral("movies"))
+            type = QStringLiteral("movie");
+        else if (type == QStringLiteral("tv") || type == QStringLiteral("tv_show") ||
+                 type == QStringLiteral("series") || type == QStringLiteral("shows"))
+            type = QStringLiteral("show");
+        else if (type == QStringLiteral("episodes"))
+            type = QStringLiteral("episode");
+        else if (type == QStringLiteral("videos"))
+            type = QStringLiteral("video");
+
+        if (type == QStringLiteral("game") || type == QStringLiteral("movie") ||
+            type == QStringLiteral("show") || type == QStringLiteral("episode") ||
+            type == QStringLiteral("video"))
+            normalized << type;
+    }
+
+    normalized.removeDuplicates();
+    if (normalized.isEmpty()) {
+        normalized << QStringLiteral("movie")
+                   << QStringLiteral("show")
+                   << QStringLiteral("episode")
+                   << QStringLiteral("video")
+                   << QStringLiteral("game");
+    }
+    return normalized;
+}
+
+bool ControlApiServer::wantsGames(const QStringList &types) const {
+    return types.contains(QStringLiteral("game"));
+}
+
+bool ControlApiServer::wantsMedia(const QStringList &types) const {
+    return types.contains(QStringLiteral("movie")) ||
+           types.contains(QStringLiteral("show")) ||
+           types.contains(QStringLiteral("episode")) ||
+           types.contains(QStringLiteral("video"));
+}
+
+QString ControlApiServer::percentDecode(const QString &value) const {
+    return QString::fromUtf8(QUrl::fromPercentEncoding(value.toUtf8()).toUtf8());
+}
+
+void ControlApiServer::launchMedia(QTcpSocket *socket,
+                                   const QString &ratingKey,
+                                   const QString &kind) {
+    if (!m_mediaBackend) {
+        writeJson(socket, 409, {{"ok", false}, {"error", "media_backend_unavailable"}});
+        return;
+    }
+    if (m_mediaBackend->get_auth_state() != QStringLiteral("authed")) {
+        writeJson(socket, 409, {{"ok", false}, {"error", "media_provider_not_configured"}});
+        return;
+    }
+    if (ratingKey.trimmed().isEmpty()) {
+        writeJson(socket, 400, {{"ok", false}, {"error", "missing_rating_key"}});
+        return;
+    }
+
+    const QString requestId = QUuid::createUuid().toString(QUuid::WithoutBraces);
+    QPointer<QTcpSocket> safeSocket(socket);
+    auto done = std::make_shared<bool>(false);
+
+    auto finish = [this, safeSocket, done](int statusCode, const QJsonObject &response) {
+        if (*done || !safeSocket)
+            return;
+        *done = true;
+        writeJson(safeSocket, statusCode, response);
+    };
+
+    connect(m_mediaBackend, &EmbyJellyfinBackend::apiLaunchStreamReady, socket,
+            [=](const QString &finishedRequestId,
+                const QVariantMap &launch,
+                const QString &url,
+                const QString &httpHeaderFields) {
+        if (finishedRequestId != requestId || *done)
+            return;
+
+        if (m_retroBackend && m_retroBackend->isRunning())
+            m_retroBackend->stop_game();
+
+        const float startSeconds = launch.value(QStringLiteral("view_offset_ms")).toInt() / 1000.0f;
+        const QString displayTitle = launch.value(QStringLiteral("title")).toString();
+        startApiTimeline(launch);
+        m_player->loadAndPlay(url, startSeconds, 0, -1, QStringList{}, false, -1, 0.0f,
+                              httpHeaderFields, false, QString{}, false, displayTitle);
+
+        finish(200, QJsonObject{
+            {"ok", true},
+            {"launch", QJsonObject::fromVariantMap(launch)},
+            {"status", playbackStatus()}
+        });
+    });
+
+    connect(m_mediaBackend, &EmbyJellyfinBackend::apiRequestFailed, socket,
+            [=](const QString &finishedRequestId, const QString &message) {
+        if (finishedRequestId != requestId || *done)
+            return;
+        finish(409, QJsonObject{
+            {"ok", false},
+            {"error", "launch_failed"},
+            {"message", message}
+        });
+    });
+
+    QTimer::singleShot(15000, socket, [=]() {
+        if (*done)
+            return;
+        finish(504, QJsonObject{{"ok", false}, {"error", "launch_timeout"}});
+    });
+
+    m_mediaBackend->api_prepare_media_launch(requestId, ratingKey, kind);
+}
+
+void ControlApiServer::launchGame(QTcpSocket *socket,
+                                  const QString &systemId,
+                                  const QString &path) {
+    if (!m_retroBackend) {
+        writeJson(socket, 409, {{"ok", false}, {"error", "game_backend_unavailable"}});
+        return;
+    }
+    if (systemId.trimmed().isEmpty() || path.trimmed().isEmpty()) {
+        writeJson(socket, 400, {{"ok", false}, {"error", "missing_game_target"}});
+        return;
+    }
+
+    QPointer<QTcpSocket> safeSocket(socket);
+    auto done = std::make_shared<bool>(false);
+    auto finish = [this, safeSocket, done](int statusCode, const QJsonObject &response) {
+        if (*done || !safeSocket)
+            return;
+        *done = true;
+        writeJson(safeSocket, statusCode, response);
+    };
+
+    connect(m_retroBackend, &RetroBackend::gameStarted, socket,
+            [=](const QString &title) {
+        if (*done)
+            return;
+        finish(200, QJsonObject{
+            {"ok", true},
+            {"launch", QJsonObject{
+                {"id", QStringLiteral("game:%1:%2").arg(
+                    systemId,
+                    QString::fromLatin1(QUrl::toPercentEncoding(path)))},
+                {"module", "game_center"},
+                {"kind", "game"},
+                {"title", title.toUpper()},
+                {"system_id", systemId},
+                {"path", path}
+            }},
+            {"status", playbackStatus()}
+        });
+    });
+
+    connect(m_retroBackend, &RetroBackend::errorOccurred, socket,
+            [=](const QString &message) {
+        if (*done)
+            return;
+        finish(409, QJsonObject{
+            {"ok", false},
+            {"error", "launch_failed"},
+            {"message", message}
+        });
+    });
+
+    QTimer::singleShot(12000, socket, [=]() {
+        if (*done)
+            return;
+        finish(504, QJsonObject{{"ok", false}, {"error", "launch_timeout"}});
+    });
+
+    if (m_player && m_player->isRunning()) {
+        const int pos = m_player->position();
+        const int dur = m_player->duration();
+        m_player->stop();
+        stopApiTimeline(pos, dur);
+    } else {
+        stopApiTimeline(0, 0);
+    }
+    m_retroBackend->launch_game(systemId, path);
+}
+
+void ControlApiServer::startApiTimeline(const QVariantMap &launch) {
+    if (!m_apiTimelineRatingKey.isEmpty())
+        stopApiTimeline(m_player ? m_player->position() : 0,
+                        m_player ? m_player->duration() : 0);
+
+    m_apiTimelineRatingKey = launch.value(QStringLiteral("rating_key")).toString();
+    m_apiTimelinePartKey = launch.value(QStringLiteral("part_key")).toString();
+    if (m_apiTimelineRatingKey.isEmpty() || !m_mediaBackend)
+        return;
+    m_apiTimelineTimer->start();
+}
+
+void ControlApiServer::stopApiTimeline(int finalPositionMs, int finalDurationMs) {
+    if (m_apiTimelineRatingKey.isEmpty())
+        return;
+    sendApiTimeline(QStringLiteral("stopped"), finalPositionMs, finalDurationMs);
+    m_apiTimelineTimer->stop();
+    m_apiTimelineRatingKey.clear();
+    m_apiTimelinePartKey.clear();
+}
+
+void ControlApiServer::sendApiTimeline(const QString &state, int positionMs, int durationMs) {
+    if (!m_mediaBackend || m_apiTimelineRatingKey.isEmpty())
+        return;
+
+    const int pos = positionMs >= 0 ? positionMs : (m_player ? m_player->position() : 0);
+    const int dur = durationMs >= 0 ? durationMs : (m_player ? m_player->duration() : 0);
+    if (state == QStringLiteral("playing") && pos <= 0)
+        return;
+
+    m_mediaBackend->update_timeline(m_apiTimelineRatingKey, m_apiTimelinePartKey,
+                                    state, pos, dur);
 }
 
 void ControlApiServer::writeJson(QTcpSocket *socket, int statusCode, const QJsonObject &body) const {

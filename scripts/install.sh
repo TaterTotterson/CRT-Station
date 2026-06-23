@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ──────────────────────────────────────────────────────────────────────────────
-# 240-MP installer for Raspberry Pi OS Trixie (arm64)
+# CRT Station installer for Raspberry Pi OS Trixie (arm64)
 #
 # Usage:
 #   bash install.sh             # install latest release
@@ -21,7 +21,7 @@ if [ "$VERSION" = "latest" ]; then
         "https://api.github.com/repos/${REPO}/releases/latest" \
         | python3 -c "import sys, json; print(json.load(sys.stdin)['tag_name'])")
 fi
-echo "Installing 240-MP ${VERSION}"
+echo "Installing CRT Station ${VERSION}"
 
 TARBALL="240-MP-${VERSION}-linux-arm64.tar.gz"
 DOWNLOAD_URL="https://github.com/${REPO}/releases/download/${VERSION}/${TARBALL}"
@@ -85,6 +85,8 @@ if [[ "${REPLY}" =~ ^[Yy]$ ]]; then
 
     pi240_install_autostart "${SERVICE_USER}" "${LAUNCHER}" "${SYSTEMD_SERVICE}"
     pi240_install_ssh_control "${SERVICE_USER}" /usr/local/sbin/240mp-ssh-control
+    pi240_install_bluetooth_control "${SERVICE_USER}" /usr/local/sbin/240mp-bluetooth-control
+    pi240_install_retro_mount_helper "${SERVICE_USER}" /usr/local/sbin/240mp-retro-mount
     pi240_auto_force_composite_video
     pi240_install_boot_splash
     echo "Service installed and enabled."
@@ -92,5 +94,5 @@ if [[ "${REPLY}" =~ ^[Yy]$ ]]; then
 fi
 
 echo ""
-echo "240-MP ${VERSION} installed successfully."
+echo "CRT Station ${VERSION} installed successfully."
 echo "Run: 240mp"

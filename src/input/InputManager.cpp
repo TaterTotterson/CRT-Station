@@ -6,12 +6,16 @@
 #include <QKeyEvent>
 #include <QFile>
 #include <QFileInfo>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QSaveFile>
 #include <QSocketNotifier>
 #include <QTextStream>
 
+#include <cstring>
+
 #ifdef Q_OS_LINUX
 #include <cerrno>
-#include <cstring>
 #include <fcntl.h>
 #include <linux/input.h>
 #include <sys/ioctl.h>
@@ -31,6 +35,9 @@ constexpr Sint16 kAxisRelease = 12000;
 // Held-direction auto-repeat, tuned to feel like keyboard repeat in lists.
 constexpr int kRepeatDelayMs    = 400;
 constexpr int kRepeatIntervalMs = 100;
+constexpr const char *kControllerMappingFile = "controller-map.json";
+constexpr const char *kGeneratedInputStart = "# --- CRT Station controller mapper start ---";
+constexpr const char *kGeneratedInputEnd = "# --- CRT Station controller mapper end ---";
 
 // Qt reports both shift keys as Qt::Key_Shift; telling them apart takes the
 // platform code. Linux keymaps (eglfs/evdev, X11, Wayland) report evdev's
@@ -43,6 +50,42 @@ bool isRightShift(const QKeyEvent *ke) {
     const quint32 sc = ke->nativeScanCode();
     return sc == 54 || sc == 62;             // KEY_RIGHTSHIFT, +8 offset
 #endif
+}
+
+QString buttonToken(Uint8 button)
+{
+    const char *name = SDL_GameControllerGetStringForButton(
+        static_cast<SDL_GameControllerButton>(button));
+    return name ? QString::fromLatin1(name).toLower() : QString();
+}
+
+QString axisName(Uint8 axis)
+{
+    const char *name = SDL_GameControllerGetStringForAxis(
+        static_cast<SDL_GameControllerAxis>(axis));
+    return name ? QString::fromLatin1(name).toLower() : QString();
+}
+
+QString displayToken(QString value)
+{
+    value.replace('_', ' ');
+    value.replace('-', " -");
+    value.replace('+', " +");
+    return value.toUpper();
+}
+
+Uint8 hatMaskForDirection(const QString &direction)
+{
+    if (direction == QStringLiteral("up"))    return SDL_HAT_UP;
+    if (direction == QStringLiteral("down"))  return SDL_HAT_DOWN;
+    if (direction == QStringLiteral("left"))  return SDL_HAT_LEFT;
+    if (direction == QStringLiteral("right")) return SDL_HAT_RIGHT;
+    return SDL_HAT_CENTERED;
+}
+
+bool isLikelyRawTriggerAxis(Uint8 axis)
+{
+    return axis == 2 || axis == 5;
 }
 }
 
@@ -82,8 +125,134 @@ InputManager::~InputManager() {
     for (SDL_GameController *gc : std::as_const(m_controllers))
         SDL_GameControllerClose(gc);
     m_controllers.clear();
+    for (SDL_Joystick *joy : std::as_const(m_joysticks))
+        SDL_JoystickClose(joy);
+    m_joysticks.clear();
+    m_rawJoystickNames.clear();
     if (m_sdlReady)
         SDL_Quit();
+}
+
+QVariantMap InputManager::getControllerMapping() const
+{
+    QFile file(QDir(m_dataRoot).absoluteFilePath(QString::fromUtf8(kControllerMappingFile)));
+    if (!file.open(QIODevice::ReadOnly))
+        return {};
+
+    QJsonParseError error;
+    const QJsonDocument doc = QJsonDocument::fromJson(file.readAll(), &error);
+    if (error.error != QJsonParseError::NoError || !doc.isObject())
+        return {};
+
+    return doc.object().toVariantMap();
+}
+
+bool InputManager::saveControllerMapping(const QVariantMap &mapping)
+{
+    QVariantMap payload = mapping;
+    payload["version"] = 1;
+    payload["updated_at"] = QDateTime::currentDateTimeUtc().toString(Qt::ISODate);
+    QVariantMap bindings = payload.value(QStringLiteral("bindings")).toMap();
+    bindings.remove(QStringLiteral("exit"));
+    payload[QStringLiteral("bindings")] = bindings;
+
+    QDir().mkpath(m_dataRoot);
+    const QString mappingPath = QDir(m_dataRoot).absoluteFilePath(QString::fromUtf8(kControllerMappingFile));
+    QSaveFile mappingFile(mappingPath);
+    if (!mappingFile.open(QIODevice::WriteOnly | QIODevice::Text)) {
+        qWarning("[input] could not write controller map: %s", qPrintable(mappingFile.errorString()));
+        return false;
+    }
+    mappingFile.write(QJsonDocument(QJsonObject::fromVariantMap(payload)).toJson(QJsonDocument::Indented));
+    if (!mappingFile.commit()) {
+        qWarning("[input] could not commit controller map: %s", qPrintable(mappingFile.errorString()));
+        return false;
+    }
+
+    const QList<QPair<QString, QString>> appBindings{
+        {QStringLiteral("up"), QStringLiteral("up")},
+        {QStringLiteral("down"), QStringLiteral("down")},
+        {QStringLiteral("left"), QStringLiteral("left")},
+        {QStringLiteral("right"), QStringLiteral("right")},
+        {QStringLiteral("b"), QStringLiteral("select")},
+        {QStringLiteral("a"), QStringLiteral("back")},
+        {QStringLiteral("menu"), QStringLiteral("menu")},
+        {QStringLiteral("start"), QStringLiteral("play_pause")}
+    };
+
+    QString generated;
+    QTextStream generatedStream(&generated);
+    generatedStream << kGeneratedInputStart << '\n';
+    generatedStream << "# Generated from Settings > Controller Mapper.\n";
+    for (const auto &pair : appBindings) {
+        const QVariantMap binding = bindings.value(pair.first).toMap();
+        const QString token = binding.value(QStringLiteral("inputToken")).toString();
+        if (!token.isEmpty())
+            generatedStream << token << ' ' << pair.second << '\n';
+    }
+    generatedStream << kGeneratedInputEnd << '\n';
+
+    const QString inputPath = QDir(m_dataRoot).absoluteFilePath(QStringLiteral("input.cfg"));
+    QString existing;
+    {
+        QFile inputFile(inputPath);
+        if (inputFile.open(QIODevice::ReadOnly | QIODevice::Text))
+            existing = QString::fromUtf8(inputFile.readAll());
+    }
+
+    const int start = existing.indexOf(QString::fromUtf8(kGeneratedInputStart));
+    const int end = existing.indexOf(QString::fromUtf8(kGeneratedInputEnd));
+    QString next = existing;
+    if (start >= 0 && end >= start) {
+        const int blockEnd = end + int(strlen(kGeneratedInputEnd));
+        next.replace(start, blockEnd - start, generated.trimmed());
+    } else {
+        if (!next.isEmpty() && !next.endsWith('\n'))
+            next.append('\n');
+        if (!next.isEmpty())
+            next.append('\n');
+        next.append(generated);
+    }
+
+    QSaveFile inputFile(inputPath);
+    if (!inputFile.open(QIODevice::WriteOnly | QIODevice::Text)) {
+        qWarning("[input] could not write input.cfg: %s", qPrintable(inputFile.errorString()));
+        return false;
+    }
+    inputFile.write(next.toUtf8());
+    if (!inputFile.commit()) {
+        qWarning("[input] could not commit input.cfg: %s", qPrintable(inputFile.errorString()));
+        return false;
+    }
+
+    m_cfgLastModified = QFileInfo(inputPath).lastModified();
+    rebuildMapping();
+    return true;
+}
+
+void InputManager::beginControllerMapping()
+{
+    m_controllerMappingActive = true;
+    m_controllerInputSeen.clear();
+    m_pressedInputTokens.clear();
+    primeControllerMappingState();
+    m_gameExitComboLatched = false;
+    m_repeatDelayTimer.stop();
+    m_repeatTimer.stop();
+    m_heldDirection = Action::None;
+}
+
+void InputManager::endControllerMapping()
+{
+    m_controllerMappingActive = false;
+    m_mappingAxisState.clear();
+    m_mappingJoystickAxisState.clear();
+    m_mappingJoystickHatState.clear();
+    m_mappingCapturedTokens.clear();
+    m_mappingCapturedPositiveAxes.clear();
+    m_mappingCapturedPositiveJoystickAxes.clear();
+    m_pressedInputTokens.clear();
+    m_gameExitComboLatched = false;
 }
 
 void InputManager::setTargetWindow(QQuickWindow *window) {
@@ -101,12 +270,15 @@ void InputManager::initSdl() {
     // label-based there): "a" always means the SOUTH position, on every pad.
     SDL_SetHint(SDL_HINT_GAMECONTROLLER_USE_BUTTON_LABELS, "0");
 
-    // Game-controller subsystem only: no video, so this works headless (EGLFS).
-    if (SDL_Init(SDL_INIT_GAMECONTROLLER) != 0) {
+    // No video subsystem, so this works headless (EGLFS). Keep raw joystick
+    // events enabled as a fallback for pads SDL can open but not map cleanly.
+    if (SDL_Init(SDL_INIT_GAMECONTROLLER | SDL_INIT_JOYSTICK) != 0) {
         qWarning("[input] SDL init failed: %s — gamepad support disabled", SDL_GetError());
         return;
     }
     m_sdlReady = true;
+    SDL_GameControllerEventState(SDL_ENABLE);
+    SDL_JoystickEventState(SDL_ENABLE);
 
     const QString dbPath = m_dataRoot + "/gamecontrollerdb.txt";
     if (QFile::exists(dbPath)) {
@@ -120,7 +292,7 @@ void InputManager::initSdl() {
     // SDL emits CONTROLLERDEVICEADDED for already-connected pads on init,
     // so the poll loop handles initial enumeration and hotplug identically.
     m_pollTimer.start(16);
-    qInfo("[input] SDL game-controller subsystem ready");
+    qInfo("[input] SDL controller/joystick subsystem ready");
 }
 
 void InputManager::pollSdl() {
@@ -129,6 +301,8 @@ void InputManager::pollSdl() {
         switch (e.type) {
         case SDL_CONTROLLERDEVICEADDED:   openController(e.cdevice.which);  break;
         case SDL_CONTROLLERDEVICEREMOVED: closeController(e.cdevice.which); break;
+        case SDL_JOYDEVICEADDED:          openJoystick(e.jdevice.which);    break;
+        case SDL_JOYDEVICEREMOVED:        closeJoystick(e.jdevice.which);   break;
         case SDL_CONTROLLERBUTTONDOWN:
             handleButton(e.cbutton.which, e.cbutton.button, true);
             break;
@@ -137,6 +311,18 @@ void InputManager::pollSdl() {
             break;
         case SDL_CONTROLLERAXISMOTION:
             handleAxis(e.caxis.which, e.caxis.axis, e.caxis.value);
+            break;
+        case SDL_JOYBUTTONDOWN:
+            handleJoystickButton(e.jbutton.which, e.jbutton.button, true);
+            break;
+        case SDL_JOYBUTTONUP:
+            handleJoystickButton(e.jbutton.which, e.jbutton.button, false);
+            break;
+        case SDL_JOYAXISMOTION:
+            handleJoystickAxis(e.jaxis.which, e.jaxis.axis, e.jaxis.value);
+            break;
+        case SDL_JOYHATMOTION:
+            handleJoystickHat(e.jhat.which, e.jhat.hat, e.jhat.value);
             break;
         default: break;
         }
@@ -151,7 +337,11 @@ void InputManager::openController(int deviceIndex) {
     }
     SDL_JoystickID id = SDL_JoystickInstanceID(SDL_GameControllerGetJoystick(gc));
     m_controllers.insert(id, gc);
-    qInfo("[input] controller added: %s", SDL_GameControllerName(gc));
+    const char *controllerName = SDL_GameControllerName(gc);
+    const QString name = controllerName ? QString::fromUtf8(controllerName) : QStringLiteral("Controller");
+    if (!shouldIgnoreJoystickName(name))
+        m_rawJoystickNames.insert(id, name);
+    qInfo("[input] controller added: %s", qPrintable(name));
     emit gamepadConnectedChanged();
 }
 
@@ -161,11 +351,19 @@ void InputManager::closeController(SDL_JoystickID instanceId) {
         return;
     qInfo("[input] controller removed: %s", SDL_GameControllerName(gc));
     SDL_GameControllerClose(gc);
+    m_rawJoystickNames.remove(instanceId);
+    m_controllerInputSeen.remove(instanceId);
 
     // Don't leave a direction repeating (or an axis latched) after unplug.
     if (m_heldDirection != Action::None)
         releaseAction(m_heldDirection);
     m_axisState.clear();
+    m_joystickAxisState.clear();
+    m_mappingJoystickAxisState.clear();
+    m_joystickHatState.clear();
+    m_mappingJoystickHatState.clear();
+    m_pressedInputTokens.clear();
+    m_gameExitComboLatched = false;
     if (m_lastActiveController == instanceId) {
         m_lastActiveController = -1;
         updateHints();
@@ -173,17 +371,82 @@ void InputManager::closeController(SDL_JoystickID instanceId) {
     emit gamepadConnectedChanged();
 }
 
+void InputManager::openJoystick(int deviceIndex) {
+    const char *rawName = SDL_JoystickNameForIndex(deviceIndex);
+    const QString name = rawName ? QString::fromUtf8(rawName) : QStringLiteral("Joystick");
+    if (shouldIgnoreJoystickName(name)) {
+        qInfo("[input] ignoring auxiliary joystick: %s", qPrintable(name));
+        return;
+    }
+
+    const SDL_JoystickID deviceId = SDL_JoystickGetDeviceInstanceID(deviceIndex);
+    if (deviceId >= 0 && m_controllers.contains(deviceId)) {
+        m_rawJoystickNames.insert(deviceId, name);
+        qInfo("[input] raw joystick fallback attached to controller: %s", qPrintable(name));
+        emit gamepadConnectedChanged();
+        return;
+    }
+
+    if (SDL_IsGameController(deviceIndex)) {
+        // The matching controller-added event will attach the raw fallback via
+        // SDL_GameControllerGetJoystick(), avoiding a double-open of the pad.
+        return;
+    }
+
+    SDL_Joystick *joy = SDL_JoystickOpen(deviceIndex);
+    if (!joy) {
+        qWarning("[input] could not open joystick %d: %s", deviceIndex, SDL_GetError());
+        return;
+    }
+
+    const SDL_JoystickID id = SDL_JoystickInstanceID(joy);
+    m_joysticks.insert(id, joy);
+    m_rawJoystickNames.insert(id, name);
+    qInfo("[input] raw joystick added: %s", qPrintable(name));
+    emit gamepadConnectedChanged();
+}
+
+void InputManager::closeJoystick(SDL_JoystickID instanceId) {
+    const bool hadRaw = m_rawJoystickNames.remove(instanceId) > 0;
+    SDL_Joystick *joy = m_joysticks.take(instanceId);
+    if (joy) {
+        const char *name = SDL_JoystickName(joy);
+        qInfo("[input] raw joystick removed: %s", name ? name : "Joystick");
+        SDL_JoystickClose(joy);
+    }
+    m_controllerInputSeen.remove(instanceId);
+
+    if (m_heldDirection != Action::None)
+        releaseAction(m_heldDirection);
+    m_joystickAxisState.clear();
+    m_mappingJoystickAxisState.clear();
+    m_joystickHatState.clear();
+    m_mappingJoystickHatState.clear();
+    m_pressedInputTokens.clear();
+    m_gameExitComboLatched = false;
+    if (m_lastActiveController == instanceId) {
+        m_lastActiveController = -1;
+        updateHints();
+    }
+    if (hadRaw || joy)
+        emit gamepadConnectedChanged();
+}
+
 // ── Mapping ───────────────────────────────────────────────────────────────────
 
 void InputManager::rebuildMapping() {
     loadDefaultMapping();
     loadUserMapping();
+    loadGameExitCombo(getControllerMapping().value(QStringLiteral("bindings")).toMap());
     updateHints();
 }
 
 void InputManager::loadDefaultMapping() {
     m_buttonMap.clear();
     m_axisMap.clear();
+    m_joystickButtonMap.clear();
+    m_joystickAxisMap.clear();
+    m_joystickHatMap.clear();
     m_labelOverrides.clear();
     m_buttonMap[SDL_CONTROLLER_BUTTON_DPAD_UP]       = Action::Up;
     m_buttonMap[SDL_CONTROLLER_BUTTON_DPAD_DOWN]     = Action::Down;
@@ -197,6 +460,24 @@ void InputManager::loadDefaultMapping() {
     m_buttonMap[SDL_CONTROLLER_BUTTON_RIGHTSHOULDER] = Action::Right;
     m_axisMap[SDL_CONTROLLER_AXIS_LEFTX] = { Action::Left, Action::Right };
     m_axisMap[SDL_CONTROLLER_AXIS_LEFTY] = { Action::Up,   Action::Down  };
+
+    // Raw Linux joystick fallback. DualSense reports D-pad as axes 6/7 on the
+    // Pi, while many generic pads use a hat or left-stick axes 0/1.
+    m_joystickButtonMap[0]  = Action::Select;     // south face
+    m_joystickButtonMap[1]  = Action::Back;       // east face
+    m_joystickButtonMap[4]  = Action::Left;       // L1
+    m_joystickButtonMap[5]  = Action::Right;      // R1
+    m_joystickButtonMap[8]  = Action::Back;       // select/share
+    m_joystickButtonMap[9]  = Action::PlayPause;  // start/options
+    m_joystickButtonMap[10] = Action::Menu;       // guide/PS
+    m_joystickAxisMap[0] = { Action::Left, Action::Right };
+    m_joystickAxisMap[1] = { Action::Up,   Action::Down  };
+    m_joystickAxisMap[6] = { Action::Left, Action::Right };
+    m_joystickAxisMap[7] = { Action::Up,   Action::Down  };
+    m_joystickHatMap[joystickHatConfigKey(0, SDL_HAT_UP)]    = Action::Up;
+    m_joystickHatMap[joystickHatConfigKey(0, SDL_HAT_DOWN)]  = Action::Down;
+    m_joystickHatMap[joystickHatConfigKey(0, SDL_HAT_LEFT)]  = Action::Left;
+    m_joystickHatMap[joystickHatConfigKey(0, SDL_HAT_RIGHT)] = Action::Right;
 }
 
 InputManager::Action InputManager::actionFromString(const QString &name, bool *ok) {
@@ -229,6 +510,91 @@ int InputManager::buttonFromToken(const QString &token) {
     const SDL_GameControllerButton button =
         SDL_GameControllerGetButtonFromString(name.toUtf8().constData());
     return button == SDL_CONTROLLER_BUTTON_INVALID ? -1 : int(button);
+}
+
+bool InputManager::shouldIgnoreJoystickName(const QString &name)
+{
+    const QString normalized = name.toLower();
+    return normalized.contains(QStringLiteral("motion sensor"))
+        || normalized.contains(QStringLiteral("motion sensors"))
+        || normalized.contains(QStringLiteral("touchpad"));
+}
+
+int InputManager::joystickButtonFromToken(const QString &token)
+{
+    QString name = token.toLower();
+    if (name.startsWith(QStringLiteral("joy_button_")))
+        name.remove(0, QStringLiteral("joy_button_").size());
+    else if (name.startsWith(QStringLiteral("joystick_button_")))
+        name.remove(0, QStringLiteral("joystick_button_").size());
+    else if (name.startsWith(QStringLiteral("joy_btn_")))
+        name.remove(0, QStringLiteral("joy_btn_").size());
+    else
+        return -1;
+
+    bool ok = false;
+    const int button = name.toInt(&ok);
+    return ok && button >= 0 ? button : -1;
+}
+
+bool InputManager::joystickAxisFromToken(const QString &token, int *axis, int *direction)
+{
+    QString name = token.toLower();
+    if (!name.startsWith(QStringLiteral("joy_axis_")))
+        return false;
+
+    name.remove(0, QStringLiteral("joy_axis_").size());
+    int sign = 0;
+    if (name.endsWith('+')) {
+        sign = +1;
+        name.chop(1);
+    } else if (name.endsWith('-')) {
+        sign = -1;
+        name.chop(1);
+    } else {
+        return false;
+    }
+
+    bool ok = false;
+    const int parsedAxis = name.toInt(&ok);
+    if (!ok || parsedAxis < 0)
+        return false;
+    if (axis)
+        *axis = parsedAxis;
+    if (direction)
+        *direction = sign;
+    return true;
+}
+
+bool InputManager::joystickHatFromToken(const QString &token, int *hat, Uint8 *hatMask)
+{
+    const QStringList parts = token.toLower().split('_', Qt::SkipEmptyParts);
+    if (parts.size() != 4 || parts[0] != QStringLiteral("joy") || parts[1] != QStringLiteral("hat"))
+        return false;
+
+    bool ok = false;
+    const int parsedHat = parts[2].toInt(&ok);
+    if (!ok || parsedHat < 0)
+        return false;
+
+    const Uint8 mask = hatMaskForDirection(parts[3]);
+    if (mask == SDL_HAT_CENTERED)
+        return false;
+    if (hat)
+        *hat = parsedHat;
+    if (hatMask)
+        *hatMask = mask;
+    return true;
+}
+
+qint64 InputManager::joystickInputKey(SDL_JoystickID which, int input)
+{
+    return (qint64(quint32(which)) << 32) | quint32(input);
+}
+
+int InputManager::joystickHatConfigKey(int hat, Uint8 hatMask)
+{
+    return (hat << 8) | int(hatMask);
 }
 
 // $DATA_ROOT/input.cfg — case-insensitive, # comments, merged over defaults,
@@ -290,6 +656,32 @@ void InputManager::loadUserMapping() {
         }
 
         QString input = parts[0].toLower();
+
+        const int joystickButton = joystickButtonFromToken(input);
+        if (joystickButton >= 0) {
+            m_joystickButtonMap[joystickButton] = action;
+            ++applied;
+            continue;
+        }
+
+        int joystickAxis = 0;
+        int joystickAxisSign = 0;
+        if (joystickAxisFromToken(input, &joystickAxis, &joystickAxisSign)) {
+            auto pair = m_joystickAxisMap.value(joystickAxis, { Action::None, Action::None });
+            (joystickAxisSign < 0 ? pair.first : pair.second) = action;
+            m_joystickAxisMap[joystickAxis] = pair;
+            ++applied;
+            continue;
+        }
+
+        int joystickHat = 0;
+        Uint8 joystickHatMask = SDL_HAT_CENTERED;
+        if (joystickHatFromToken(input, &joystickHat, &joystickHatMask)) {
+            m_joystickHatMap[joystickHatConfigKey(joystickHat, joystickHatMask)] = action;
+            ++applied;
+            continue;
+        }
+
         input.remove(QStringLiteral("sdl_controller_axis_"));
 
         // Axis bindings carry a direction suffix (lefty-, triggerright+).
@@ -520,10 +912,322 @@ void InputManager::noteActiveController(SDL_JoystickID which) {
     updateHints();
 }
 
+QString InputManager::axisToken(Uint8 axis, int direction)
+{
+    const QString name = axisName(axis);
+    if (name.isEmpty())
+        return QString();
+    return name + (direction < 0 ? QStringLiteral("-") : QStringLiteral("+"));
+}
+
+QString InputManager::retroHatDirection(Uint8 hatMask)
+{
+    switch (hatMask) {
+    case SDL_HAT_UP:    return QStringLiteral("up");
+    case SDL_HAT_DOWN:  return QStringLiteral("down");
+    case SDL_HAT_LEFT:  return QStringLiteral("left");
+    case SDL_HAT_RIGHT: return QStringLiteral("right");
+    default:            return QString();
+    }
+}
+
+QVariantMap InputManager::retroBindingFromSdlBind(const SDL_GameControllerButtonBind &bind,
+                                                  int direction)
+{
+    QVariantMap result;
+    switch (bind.bindType) {
+    case SDL_CONTROLLER_BINDTYPE_BUTTON:
+        result["retroType"] = QStringLiteral("btn");
+        result["retroValue"] = QString::number(bind.value.button);
+        break;
+    case SDL_CONTROLLER_BINDTYPE_AXIS:
+        result["retroType"] = QStringLiteral("axis");
+        result["retroValue"] = QStringLiteral("%1%2")
+            .arg(direction < 0 ? QStringLiteral("-") : QStringLiteral("+"))
+            .arg(bind.value.axis);
+        break;
+    case SDL_CONTROLLER_BINDTYPE_HAT: {
+        const QString directionName = retroHatDirection(bind.value.hat.hat_mask);
+        if (directionName.isEmpty())
+            break;
+        result["retroType"] = QStringLiteral("btn");
+        result["retroValue"] = QStringLiteral("h%1%2").arg(bind.value.hat.hat).arg(directionName);
+        break;
+    }
+    default:
+        break;
+    }
+    return result;
+}
+
+QVariantMap InputManager::mappingInputForButton(SDL_GameController *controller, Uint8 button) const
+{
+    QVariantMap input;
+    if (!controller)
+        return input;
+
+    const QString token = buttonToken(button);
+    if (token.isEmpty())
+        return input;
+
+    input["inputToken"] = token;
+    input["label"] = labelForButton(button).isEmpty() ? displayToken(token) : labelForButton(button);
+    input["source"] = QStringLiteral("button");
+
+    const SDL_GameControllerButtonBind bind = SDL_GameControllerGetBindForButton(
+        controller, static_cast<SDL_GameControllerButton>(button));
+    const QVariantMap retro = retroBindingFromSdlBind(bind, +1);
+    for (auto it = retro.constBegin(); it != retro.constEnd(); ++it)
+        input.insert(it.key(), it.value());
+
+    return input;
+}
+
+QVariantMap InputManager::mappingInputForAxis(SDL_GameController *controller, Uint8 axis,
+                                              int direction) const
+{
+    QVariantMap input;
+    if (!controller || direction == 0)
+        return input;
+
+    const QString token = axisToken(axis, direction);
+    if (token.isEmpty())
+        return input;
+
+    input["inputToken"] = token;
+    input["label"] = displayToken(token);
+    input["source"] = QStringLiteral("axis");
+
+    const SDL_GameControllerButtonBind bind = SDL_GameControllerGetBindForAxis(
+        controller, static_cast<SDL_GameControllerAxis>(axis));
+    const QVariantMap retro = retroBindingFromSdlBind(bind, direction);
+    for (auto it = retro.constBegin(); it != retro.constEnd(); ++it)
+        input.insert(it.key(), it.value());
+
+    return input;
+}
+
+QVariantMap InputManager::mappingInputForJoystickButton(Uint8 button) const
+{
+    QVariantMap input;
+    input["inputToken"] = QStringLiteral("joy_button_%1").arg(int(button));
+    input["label"] = labelForJoystickButton(button);
+    input["source"] = QStringLiteral("joy_button");
+    input["retroType"] = QStringLiteral("btn");
+    input["retroValue"] = QString::number(button);
+    return input;
+}
+
+QVariantMap InputManager::mappingInputForJoystickAxis(Uint8 axis, int direction) const
+{
+    QVariantMap input;
+    if (direction == 0)
+        return input;
+    input["inputToken"] = QStringLiteral("joy_axis_%1%2")
+        .arg(int(axis))
+        .arg(direction < 0 ? QStringLiteral("-") : QStringLiteral("+"));
+    input["label"] = QStringLiteral("AXIS %1%2")
+        .arg(int(axis))
+        .arg(direction < 0 ? QStringLiteral("-") : QStringLiteral("+"));
+    input["source"] = QStringLiteral("joy_axis");
+    input["retroType"] = QStringLiteral("axis");
+    input["retroValue"] = QStringLiteral("%1%2")
+        .arg(direction < 0 ? QStringLiteral("-") : QStringLiteral("+"))
+        .arg(int(axis));
+    return input;
+}
+
+QVariantMap InputManager::mappingInputForJoystickHat(Uint8 hat, Uint8 hatMask) const
+{
+    const QString direction = retroHatDirection(hatMask);
+    if (direction.isEmpty())
+        return {};
+
+    QVariantMap input;
+    input["inputToken"] = QStringLiteral("joy_hat_%1_%2").arg(int(hat)).arg(direction);
+    input["label"] = QStringLiteral("HAT %1 %2").arg(int(hat)).arg(direction.toUpper());
+    input["source"] = QStringLiteral("joy_hat");
+    input["retroType"] = QStringLiteral("btn");
+    input["retroValue"] = QStringLiteral("h%1%2").arg(int(hat)).arg(direction);
+    return input;
+}
+
+void InputManager::primeControllerMappingState()
+{
+    m_mappingAxisState.clear();
+    m_mappingJoystickAxisState.clear();
+    m_mappingJoystickHatState.clear();
+    m_mappingCapturedTokens.clear();
+    m_mappingCapturedPositiveAxes.clear();
+    m_mappingCapturedPositiveJoystickAxes.clear();
+
+    const auto axisDirection = [](Sint16 value) -> int {
+        if (value >= kAxisEngage)
+            return +1;
+        if (value <= -kAxisEngage)
+            return -1;
+        return 0;
+    };
+
+    for (auto it = m_controllers.constBegin(); it != m_controllers.constEnd(); ++it) {
+        SDL_GameController *controller = it.value();
+        if (!controller)
+            continue;
+        for (int axis = 0; axis < SDL_CONTROLLER_AXIS_MAX; ++axis) {
+            const int direction = axisDirection(SDL_GameControllerGetAxis(
+                controller, static_cast<SDL_GameControllerAxis>(axis)));
+            if (direction != 0)
+                m_mappingAxisState[axis] = direction;
+        }
+    }
+
+    for (auto it = m_rawJoystickNames.constBegin(); it != m_rawJoystickNames.constEnd(); ++it) {
+        const SDL_JoystickID id = it.key();
+        SDL_Joystick *joy = m_joysticks.value(id, nullptr);
+        if (!joy) {
+            SDL_GameController *controller = m_controllers.value(id, nullptr);
+            if (controller)
+                joy = SDL_GameControllerGetJoystick(controller);
+        }
+        if (!joy)
+            continue;
+
+        const int axes = SDL_JoystickNumAxes(joy);
+        for (int axis = 0; axis < axes; ++axis) {
+            const int direction = axisDirection(SDL_JoystickGetAxis(joy, axis));
+            if (direction != 0)
+                m_mappingJoystickAxisState[joystickInputKey(id, axis)] = direction;
+        }
+
+        const int hats = SDL_JoystickNumHats(joy);
+        for (int hat = 0; hat < hats; ++hat) {
+            const Uint8 value = SDL_JoystickGetHat(joy, hat);
+            if (value != SDL_HAT_CENTERED)
+                m_mappingJoystickHatState[joystickInputKey(id, hat)] = value;
+        }
+    }
+}
+
+bool InputManager::captureMappingInput(const QVariantMap &input,
+                                       SDL_JoystickID which,
+                                       bool markControllerSeen)
+{
+    const QString token = input.value(QStringLiteral("inputToken")).toString();
+    if (token.isEmpty() || m_mappingCapturedTokens.contains(token))
+        return false;
+
+    m_mappingCapturedTokens.insert(token);
+    if (markControllerSeen)
+        m_controllerInputSeen.insert(which);
+    noteActiveController(which);
+    setLastInputDevice(QStringLiteral("gamepad"));
+    emit controllerMappingInput(input);
+    return true;
+}
+
+void InputManager::loadGameExitCombo(const QVariantMap &bindings)
+{
+    m_gameExitComboTokenGroups.clear();
+
+    const auto tokenFor = [&](const QString &key) {
+        return bindings.value(key).toMap()
+            .value(QStringLiteral("inputToken")).toString();
+    };
+
+    const auto addGroup = [&](const QString &mappedToken, std::initializer_list<QString> fallbacks) {
+        QSet<QString> group;
+        for (const QString &token : fallbacks) {
+            if (!token.isEmpty())
+                group.insert(token);
+        }
+        if (!mappedToken.isEmpty())
+            group.insert(mappedToken);
+        if (!group.isEmpty())
+            m_gameExitComboTokenGroups.append(group);
+    };
+
+    // Physical combo: D-up + both bumpers + top face (Y/Triangle).
+    // RetroArch uses retropad naming, while SDL/raw joystick paths report
+    // different tokens, so each part accepts the saved token plus known aliases.
+    addGroup(tokenFor(QStringLiteral("up")), {
+        QStringLiteral("dpup"),
+        QStringLiteral("joy_hat_0_up"),
+        QStringLiteral("joy_axis_7-")
+    });
+    addGroup(tokenFor(QStringLiteral("l")), {
+        QStringLiteral("leftshoulder"),
+        QStringLiteral("joy_button_4")
+    });
+    addGroup(tokenFor(QStringLiteral("r")), {
+        QStringLiteral("rightshoulder"),
+        QStringLiteral("joy_button_5")
+    });
+    addGroup(tokenFor(QStringLiteral("x")), {
+        QStringLiteral("y"),
+        QStringLiteral("joy_button_3")
+    });
+}
+
+bool InputManager::updatePressedInputToken(const QString &token, bool pressed)
+{
+    if (token.isEmpty() || m_controllerMappingActive)
+        return false;
+
+    if (pressed)
+        m_pressedInputTokens.insert(token);
+    else
+        m_pressedInputTokens.remove(token);
+    return checkGameExitCombo();
+}
+
+bool InputManager::checkGameExitCombo()
+{
+    if (m_gameExitComboTokenGroups.isEmpty())
+        return false;
+
+    for (const QSet<QString> &group : std::as_const(m_gameExitComboTokenGroups)) {
+        bool groupPressed = false;
+        for (const QString &token : group) {
+            if (m_pressedInputTokens.contains(token)) {
+                groupPressed = true;
+                break;
+            }
+        }
+        if (!groupPressed) {
+            m_gameExitComboLatched = false;
+            return false;
+        }
+    }
+    if (m_gameExitComboLatched)
+        return true;
+
+    m_gameExitComboLatched = true;
+    m_repeatDelayTimer.stop();
+    m_repeatTimer.stop();
+    m_heldDirection = Action::None;
+    setLastInputDevice(QStringLiteral("gamepad"));
+    emit homeRequested();
+    return true;
+}
+
 void InputManager::handleButton(SDL_JoystickID which, Uint8 button, bool pressed) {
+    updatePressedInputToken(buttonToken(button), pressed);
+    if (m_controllerMappingActive) {
+        if (m_rawJoystickNames.contains(which))
+            return;
+        if (!pressed)
+            return;
+        SDL_GameController *controller = m_controllers.value(which, nullptr);
+        const QVariantMap input = mappingInputForButton(controller, button);
+        if (!input.isEmpty())
+            captureMappingInput(input, which, true);
+        return;
+    }
+
     const Action a = m_buttonMap.value(button, Action::None);
     if (a == Action::None)
         return;
+    m_controllerInputSeen.insert(which);
     noteActiveController(which);
     if (pressed)
         pressAction(a, QStringLiteral("gamepad"));
@@ -532,6 +1236,34 @@ void InputManager::handleButton(SDL_JoystickID which, Uint8 button, bool pressed
 }
 
 void InputManager::handleAxis(SDL_JoystickID which, Uint8 axis, Sint16 value) {
+    if (m_controllerMappingActive) {
+        if (m_rawJoystickNames.contains(which))
+            return;
+        const int old = m_mappingAxisState.value(axis, 0);
+        int now = old;
+        if (old == 0) {
+            if (value >= kAxisEngage)       now = +1;
+            else if (value <= -kAxisEngage) now = -1;
+        } else if (old > 0) {
+            if (value < kAxisRelease)       now = (value <= -kAxisEngage) ? -1 : 0;
+        } else {
+            if (value > -kAxisRelease)      now = (value >= kAxisEngage) ? +1 : 0;
+        }
+        if (now == old)
+            return;
+        m_mappingAxisState[axis] = now;
+        if (now == 0)
+            return;
+        if (now < 0 && m_mappingCapturedPositiveAxes.contains(axis))
+            return;
+
+        SDL_GameController *controller = m_controllers.value(which, nullptr);
+        const QVariantMap input = mappingInputForAxis(controller, axis, now);
+        if (!input.isEmpty() && captureMappingInput(input, which, true) && now > 0)
+            m_mappingCapturedPositiveAxes.insert(axis);
+        return;
+    }
+
     const auto it = m_axisMap.constFind(axis);
     if (it == m_axisMap.constEnd())
         return;
@@ -549,6 +1281,11 @@ void InputManager::handleAxis(SDL_JoystickID which, Uint8 axis, Sint16 value) {
     if (now == old)
         return;
     m_axisState[axis] = now;
+    m_controllerInputSeen.insert(which);
+    if (old != 0)
+        updatePressedInputToken(axisToken(axis, old), false);
+    if (now != 0)
+        updatePressedInputToken(axisToken(axis, now), true);
 
     // Only a real engage/release counts as "using" this controller — idle
     // stick jitter must not steal label ownership from the pad in use.
@@ -557,6 +1294,152 @@ void InputManager::handleAxis(SDL_JoystickID which, Uint8 axis, Sint16 value) {
         releaseAction(old < 0 ? it->first : it->second);
     if (now != 0)
         pressAction(now < 0 ? it->first : it->second, QStringLiteral("gamepad"));
+}
+
+void InputManager::handleJoystickButton(SDL_JoystickID which, Uint8 button, bool pressed) {
+    if (!m_rawJoystickNames.contains(which))
+        return;
+    updatePressedInputToken(QStringLiteral("joy_button_%1").arg(int(button)), pressed);
+    if (!m_controllerMappingActive && m_controllerInputSeen.contains(which))
+        return;
+
+    if (m_controllerMappingActive) {
+        if (!pressed)
+            return;
+        const QVariantMap input = mappingInputForJoystickButton(button);
+        captureMappingInput(input, which, false);
+        return;
+    }
+
+    const Action a = m_joystickButtonMap.value(button, Action::None);
+    if (a == Action::None)
+        return;
+    noteActiveController(which);
+    if (pressed)
+        pressAction(a, QStringLiteral("gamepad"));
+    else
+        releaseAction(a);
+}
+
+void InputManager::handleJoystickAxis(SDL_JoystickID which, Uint8 axis, Sint16 value) {
+    if (!m_rawJoystickNames.contains(which))
+        return;
+    if (!m_controllerMappingActive && m_controllerInputSeen.contains(which))
+        return;
+
+    const qint64 key = joystickInputKey(which, axis);
+    if (m_controllerMappingActive) {
+        const int old = m_mappingJoystickAxisState.value(key, 0);
+        int now = old;
+        if (old == 0) {
+            if (value >= kAxisEngage)       now = +1;
+            else if (value <= -kAxisEngage) now = -1;
+        } else if (old > 0) {
+            if (value < kAxisRelease)       now = (value <= -kAxisEngage) ? -1 : 0;
+        } else {
+            if (value > -kAxisRelease)      now = (value >= kAxisEngage) ? +1 : 0;
+        }
+        if (now == old)
+            return;
+        m_mappingJoystickAxisState[key] = now;
+        if (now == 0 || (now < 0 && m_mappingCapturedPositiveJoystickAxes.contains(key))
+            || (isLikelyRawTriggerAxis(axis) && now < 0))
+            return;
+
+        const QVariantMap input = mappingInputForJoystickAxis(axis, now);
+        if (!input.isEmpty() && captureMappingInput(input, which, false) && now > 0)
+            m_mappingCapturedPositiveJoystickAxes.insert(key);
+        return;
+    }
+
+    const auto it = m_joystickAxisMap.constFind(axis);
+    if (it == m_joystickAxisMap.constEnd())
+        return;
+
+    const int old = m_joystickAxisState.value(key, 0);
+    int now = old;
+    if (old == 0) {
+        if (value >= kAxisEngage)       now = +1;
+        else if (value <= -kAxisEngage) now = -1;
+    } else if (old > 0) {
+        if (value < kAxisRelease)       now = (value <= -kAxisEngage) ? -1 : 0;
+    } else {
+        if (value > -kAxisRelease)      now = (value >= kAxisEngage) ? +1 : 0;
+    }
+    if (now == old)
+        return;
+    m_joystickAxisState[key] = now;
+    if (old != 0)
+        updatePressedInputToken(QStringLiteral("joy_axis_%1%2")
+                                    .arg(int(axis))
+                                    .arg(old < 0 ? QStringLiteral("-") : QStringLiteral("+")),
+                                false);
+    if (now != 0)
+        updatePressedInputToken(QStringLiteral("joy_axis_%1%2")
+                                    .arg(int(axis))
+                                    .arg(now < 0 ? QStringLiteral("-") : QStringLiteral("+")),
+                                true);
+
+    noteActiveController(which);
+    if (old != 0)
+        releaseAction(old < 0 ? it->first : it->second);
+    if (now != 0)
+        pressAction(now < 0 ? it->first : it->second, QStringLiteral("gamepad"));
+}
+
+void InputManager::handleJoystickHat(SDL_JoystickID which, Uint8 hat, Uint8 value) {
+    if (!m_rawJoystickNames.contains(which))
+        return;
+    if (!m_controllerMappingActive && m_controllerInputSeen.contains(which))
+        return;
+
+    const qint64 key = joystickInputKey(which, hat);
+    if (m_controllerMappingActive) {
+        const Uint8 old = m_mappingJoystickHatState.value(key, SDL_HAT_CENTERED);
+        if (value == old)
+            return;
+        m_mappingJoystickHatState[key] = value;
+        const Uint8 masks[] = { SDL_HAT_UP, SDL_HAT_DOWN, SDL_HAT_LEFT, SDL_HAT_RIGHT };
+        for (Uint8 mask : masks) {
+            const QString direction = retroHatDirection(mask);
+            if (direction.isEmpty())
+                continue;
+            if (!(old & mask) && (value & mask)) {
+                const QVariantMap input = mappingInputForJoystickHat(hat, mask);
+                if (!input.isEmpty() && captureMappingInput(input, which, false))
+                    return;
+            }
+        }
+        return;
+    }
+
+    const Uint8 old = m_joystickHatState.value(key, SDL_HAT_CENTERED);
+    if (value == old)
+        return;
+    m_joystickHatState[key] = value;
+    const Uint8 tokenMasks[] = { SDL_HAT_UP, SDL_HAT_DOWN, SDL_HAT_LEFT, SDL_HAT_RIGHT };
+    for (Uint8 mask : tokenMasks) {
+        const QString direction = retroHatDirection(mask);
+        if (direction.isEmpty())
+            continue;
+        const QString token = QStringLiteral("joy_hat_%1_%2").arg(int(hat)).arg(direction);
+        if ((old & mask) && !(value & mask))
+            updatePressedInputToken(token, false);
+        if (!(old & mask) && (value & mask))
+            updatePressedInputToken(token, true);
+    }
+    noteActiveController(which);
+
+    const Uint8 masks[] = { SDL_HAT_UP, SDL_HAT_DOWN, SDL_HAT_LEFT, SDL_HAT_RIGHT };
+    for (Uint8 mask : masks) {
+        const Action action = m_joystickHatMap.value(joystickHatConfigKey(hat, mask), Action::None);
+        if (action == Action::None)
+            continue;
+        if ((old & mask) && !(value & mask))
+            releaseAction(action);
+        if (!(old & mask) && (value & mask))
+            pressAction(action, QStringLiteral("gamepad"));
+    }
 }
 
 void InputManager::pressAction(Action a, const QString &device) {
@@ -833,6 +1716,36 @@ QString InputManager::labelForButton(int button) const {
     return name ? QString::fromLatin1(name).toUpper() : QString();
 }
 
+QString InputManager::labelForJoystickButton(int button) const {
+    QString name = m_rawJoystickNames.value(m_lastActiveController).toLower();
+    if (name.isEmpty() && !m_rawJoystickNames.isEmpty())
+        name = m_rawJoystickNames.constBegin().value().toLower();
+
+    const bool playstation = name.contains(QStringLiteral("dualsense"))
+                          || name.contains(QStringLiteral("dualshock"))
+                          || name.contains(QStringLiteral("wireless controller"));
+    if (playstation) {
+        switch (button) {
+        case 0:  return QStringLiteral("X");
+        case 1:  return QStringLiteral("O");
+        case 2:  return QStringLiteral("SQ");
+        case 3:  return QStringLiteral("TR");
+        case 4:  return QStringLiteral("L1");
+        case 5:  return QStringLiteral("R1");
+        case 6:  return QStringLiteral("L2");
+        case 7:  return QStringLiteral("R2");
+        case 8:  return QStringLiteral("SHARE");
+        case 9:  return QStringLiteral("OPT");
+        case 10: return QStringLiteral("PS");
+        case 11: return QStringLiteral("L3");
+        case 12: return QStringLiteral("R3");
+        default: break;
+        }
+    }
+
+    return QStringLiteral("B%1").arg(button);
+}
+
 // hints drives the footer labels in every view. Keyboard values are the exact
 // strings the footers used before this existed; gamepad values come from a
 // reverse lookup of the active mapping (enum order puts face buttons first).
@@ -851,6 +1764,13 @@ void InputManager::updateHints() {
             for (int b = 0; b < SDL_CONTROLLER_BUTTON_MAX; ++b) {
                 if (m_buttonMap.value(b, Action::None) == a) {
                     const QString label = labelForButton(b);
+                    if (!label.isEmpty())
+                        return "[" + label + "]";
+                }
+            }
+            for (auto it = m_joystickButtonMap.constBegin(); it != m_joystickButtonMap.constEnd(); ++it) {
+                if (it.value() == a) {
+                    const QString label = labelForJoystickButton(it.key());
                     if (!label.isEmpty())
                         return "[" + label + "]";
                 }

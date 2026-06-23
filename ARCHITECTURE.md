@@ -1,6 +1,6 @@
-# 240-MP Architecture
+# CRT Station Architecture
 
-240-MP is a retro VCR-style Emby/Jellyfin media app built with **C++ Qt6 + QML**, targeting **Raspberry Pi 4 / Raspberry Pi OS arm64 / composite CRT output** as the production platform. The macOS path exists for quick local development and smoke testing. This is the reference for working on 240-MP's code, whether you're changing the app shell or the Emby/Jellyfin module.
+CRT Station is a retro VCR-style media app built with **C++ Qt6 + QML**, targeting **Raspberry Pi 4 / Raspberry Pi OS arm64 / composite CRT output** as the production platform. The macOS path exists for quick local development and smoke testing. This is the reference for working on CRT Station's code, whether you're changing the app shell or a module.
 
 If you just want to install or build the app, see [INSTALL.md](INSTALL.md) and [BUILDING.md](BUILDING.md). 
 
@@ -8,11 +8,11 @@ If you want to contribute, please start with [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Philosophy
 
-Think of 240-MP as a **browsing shell** that hands off to **purpose-built tools**.
+Think of CRT Station as a **browsing shell** that hands off to **purpose-built tools**.
 
 - The app shell handles browsing, auth, and settings
 - **Modules** are self-contained media integrations (Local Files, Emby/Jellyfin, Over The Air, etc...) that the shell discovers and loads at startup.
-- When a user picks something to play, the shell hands off to a dedicated fullscreen tool and resumes when that tool exits. For video, that tool is **mpv**, launched as a subprocess by `MpvController`. mpv is installed separately (`apt install mpv` / `brew install mpv`).  240-MP does not link against libmpv.
+- When a user picks something to play, the shell hands off to a dedicated fullscreen tool and resumes when that tool exits. For video, that tool is **mpv**, launched as a subprocess by `MpvController`. mpv is installed separately (`apt install mpv` / `brew install mpv`). CRT Station does not link against libmpv.
 
 The guiding idea: **browse structured content, then hand off to the right tool for the job** rather than bundling everything into one binary.
 

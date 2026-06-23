@@ -19,6 +19,10 @@ FocusScope {
     property var navStack: []
     property var currentParams: ({})
 
+    function loginView() {
+        return embyBackend.get_media_provider() === "PLEX" ? "PlexLogin.qml" : "LocalLogin.qml"
+    }
+
     function navigateTo(viewPath, params, fromState) {
         var resolved = Qt.resolvedUrl(viewPath)
         navStack.push({ source: internalLoader.source, params: currentParams, listState: fromState || {} })
@@ -78,7 +82,7 @@ FocusScope {
         target: embyBackend
         function onLogoutComplete() {
             moduleRoot.navStack = []
-            moduleRoot.navigateTo("LocalLogin.qml", {})
+            moduleRoot.navigateTo(moduleRoot.loginView(), {})
         }
     }
 
@@ -87,7 +91,7 @@ FocusScope {
         if (state === "authed") {
             navigateTo("Libraries.qml", {})
         } else {
-            navigateTo("LocalLogin.qml", {})
+            navigateTo(loginView(), {})
         }
     }
 }

@@ -3,6 +3,7 @@
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QFutureWatcher>
 #include <QJsonDocument>
 #include <QJsonArray>
 #include <QJsonObject>
@@ -15,12 +16,14 @@
 #include <QDebug>
 #include <QRegularExpression>
 #include <QQmlContext>
+#include <QtConcurrent/QtConcurrent>
 
 namespace {
 constexpr const char *kDefaultUpdateManifestUrl =
     "https://raw.githubusercontent.com/TaterTotterson/240-MP-Emby-Jelly/main/update-manifest.json";
 constexpr const char *kPiUpdateHelper = "/usr/local/sbin/240mp-update";
 constexpr const char *kSshControlHelper = "/usr/local/sbin/240mp-ssh-control";
+constexpr const char *kBluetoothControlHelper = "/usr/local/sbin/240mp-bluetooth-control";
 
 int compareVersions(const QString &left, const QString &right)
 {
@@ -131,6 +134,150 @@ QVariantMap runSshControl(const QString &action)
     result["message"] = ok ? sshControlMessage(result)
                            : (errorOutput.isEmpty()
                                   ? QStringLiteral("SSH CONTROL HELPER FAILED.")
+                                  : errorOutput.toUpper());
+    return result;
+#endif
+}
+
+QVariantMap parseBluetoothControlOutput(const QString &output)
+{
+    QVariantMap result{
+        {"available", false},
+        {"enabled", false},
+        {"active", false},
+        {"powered", false},
+        {"discovering", false}
+    };
+    QVariantList devices;
+
+    const QStringList lines = output.split('\n', Qt::SkipEmptyParts);
+    for (const QString &line : lines) {
+        if (line.startsWith(QStringLiteral("device\t"))) {
+            const QStringList parts = line.split('\t');
+            if (parts.size() < 6)
+                continue;
+
+            const bool paired = truthyValue(parts.value(3));
+            const bool trusted = truthyValue(parts.value(4));
+            const bool connected = truthyValue(parts.value(5));
+            QString status = QStringLiteral("PAIR");
+            if (connected)
+                status = QStringLiteral("CONNECTED");
+            else if (paired || trusted)
+                status = QStringLiteral("PAIRED");
+
+            devices.append(QVariantMap{
+                {"address", parts.value(1)},
+                {"name", parts.value(2).isEmpty() ? parts.value(1) : parts.value(2)},
+                {"paired", paired},
+                {"trusted", trusted},
+                {"connected", connected},
+                {"status", status}
+            });
+            continue;
+        }
+
+        const int eq = line.indexOf('=');
+        if (eq <= 0)
+            continue;
+
+        const QString key = line.left(eq).trimmed();
+        const QString value = line.mid(eq + 1).trimmed();
+        if (key == "available" || key == "enabled" || key == "active" ||
+            key == "powered" || key == "discovering") {
+            result[key] = truthyValue(value);
+        } else if (key == "message") {
+            result[key] = value;
+        }
+    }
+
+    result["devices"] = devices;
+    return result;
+}
+
+QString bluetoothControlMessage(const QVariantMap &info, const QString &action)
+{
+    if (!info.value("available").toBool())
+        return QStringLiteral("BLUETOOTH IS NOT AVAILABLE.");
+
+    if (action == QStringLiteral("scan")) {
+        const int count = info.value("devices").toList().size();
+        return count == 0
+            ? QStringLiteral("NO CONTROLLERS FOUND.")
+            : QStringLiteral("FOUND %1 CONTROLLER%2.").arg(count).arg(count == 1 ? QString() : QStringLiteral("S"));
+    }
+
+    if (action == QStringLiteral("pair-connect"))
+        return QStringLiteral("CONTROLLER CONNECT REQUEST SENT.");
+    if (action == QStringLiteral("forget"))
+        return QStringLiteral("CONTROLLER FORGOTTEN.");
+
+    if (info.value("enabled").toBool() && info.value("active").toBool() &&
+        info.value("powered").toBool()) {
+        return QStringLiteral("BLUETOOTH IS ON.");
+    }
+    if (info.value("enabled").toBool() || info.value("active").toBool())
+        return QStringLiteral("BLUETOOTH IS ENABLED.");
+    return QStringLiteral("BLUETOOTH IS OFF.");
+}
+
+QVariantMap runBluetoothControl(const QStringList &helperArgs, int timeoutMs = 15000)
+{
+    const QString action = helperArgs.isEmpty() ? QStringLiteral("status") : helperArgs.first();
+    QVariantMap result{
+        {"ok", false},
+        {"available", false},
+        {"enabled", false},
+        {"active", false},
+        {"powered", false},
+        {"discovering", false},
+        {"devices", QVariantList{}},
+        {"message", "BLUETOOTH CONTROL IS NOT AVAILABLE ON THIS SYSTEM."}
+    };
+
+#ifndef Q_OS_LINUX
+    Q_UNUSED(helperArgs);
+    Q_UNUSED(timeoutMs);
+    return result;
+#else
+    const QFileInfo helperInfo(QString::fromUtf8(kBluetoothControlHelper));
+    if (!helperInfo.exists() || !helperInfo.isExecutable())
+        return result;
+
+    const QFileInfo sudoInfo("/usr/bin/sudo");
+    const QString sudoPath = sudoInfo.exists() ? QStringLiteral("/usr/bin/sudo")
+                                               : QStringLiteral("sudo");
+    QStringList args{
+        QStringLiteral("-n"),
+        QString::fromUtf8(kBluetoothControlHelper)
+    };
+    args.append(helperArgs);
+
+    QProcess process;
+    process.start(sudoPath, args);
+    if (!process.waitForStarted(1000)) {
+        result["message"] = "COULD NOT START BLUETOOTH CONTROL HELPER.";
+        return result;
+    }
+
+    if (!process.waitForFinished(timeoutMs)) {
+        process.kill();
+        process.waitForFinished(1000);
+        result["message"] = "BLUETOOTH CONTROL HELPER TIMED OUT.";
+        return result;
+    }
+
+    const QString output = QString::fromUtf8(process.readAllStandardOutput());
+    const QString errorOutput = QString::fromUtf8(process.readAllStandardError()).trimmed();
+    const QVariantMap parsedStatus = parseBluetoothControlOutput(output);
+    for (auto it = parsedStatus.constBegin(); it != parsedStatus.constEnd(); ++it)
+        result.insert(it.key(), it.value());
+
+    const bool ok = process.exitStatus() == QProcess::NormalExit && process.exitCode() == 0;
+    result["ok"] = ok;
+    result["message"] = ok ? bluetoothControlMessage(result, action)
+                           : (errorOutput.isEmpty()
+                                  ? QStringLiteral("BLUETOOTH CONTROL HELPER FAILED.")
                                   : errorOutput.toUpper());
     return result;
 #endif
@@ -447,7 +594,7 @@ void AppCore::checkForUpdates() {
     }
 
     QNetworkRequest request(url);
-    request.setRawHeader("User-Agent", QByteArray("240-MP/") + appVersion().toUtf8());
+    request.setRawHeader("User-Agent", QByteArray("CRT Station/") + appVersion().toUtf8());
 
     QNetworkReply *reply = m_updateNetwork->get(request);
     connect(reply, &QNetworkReply::finished, this, [this, reply]() {
@@ -526,7 +673,7 @@ void AppCore::installUpdate() {
     result["ok"] = started;
     result["status"] = started ? "started" : "error";
     result["message"] = started
-        ? "INSTALLING UPDATE. 240-MP WILL RESTART."
+        ? "INSTALLING UPDATE. CRT STATION WILL RESTART."
         : "COULD NOT START THE UPDATE HELPER.";
     emit updateInstallFinished(result);
 }
@@ -537,6 +684,42 @@ QVariantMap AppCore::getSshInfo() const {
 
 QVariantMap AppCore::setSshEnabled(bool enabled) {
     return runSshControl(enabled ? QStringLiteral("enable") : QStringLiteral("disable"));
+}
+
+QVariantMap AppCore::getBluetoothInfo() const {
+    return runBluetoothControl({QStringLiteral("status")});
+}
+
+QVariantMap AppCore::setBluetoothEnabled(bool enabled) {
+    return runBluetoothControl({enabled ? QStringLiteral("enable") : QStringLiteral("disable")});
+}
+
+QVariantMap AppCore::scanBluetoothDevices() {
+    return runBluetoothControl({QStringLiteral("scan")}, 24000);
+}
+
+void AppCore::scanBluetoothDevicesAsync() {
+    auto *watcher = new QFutureWatcher<QVariantMap>(this);
+    connect(watcher, &QFutureWatcher<QVariantMap>::finished, this, [this, watcher]() {
+        const QVariantMap result = watcher->result();
+        watcher->deleteLater();
+        emit bluetoothScanFinished(result);
+    });
+    watcher->setFuture(QtConcurrent::run([]() {
+        return runBluetoothControl({QStringLiteral("scan")}, 24000);
+    }));
+}
+
+QVariantMap AppCore::pairBluetoothDevice(const QString &address) {
+    return runBluetoothControl({QStringLiteral("pair-connect"), address.trimmed()}, 30000);
+}
+
+QVariantMap AppCore::connectBluetoothDevice(const QString &address) {
+    return runBluetoothControl({QStringLiteral("connect"), address.trimmed()}, 15000);
+}
+
+QVariantMap AppCore::forgetBluetoothDevice(const QString &address) {
+    return runBluetoothControl({QStringLiteral("forget"), address.trimmed()}, 15000);
 }
 
 QVariant AppCore::get_installed_modules() {

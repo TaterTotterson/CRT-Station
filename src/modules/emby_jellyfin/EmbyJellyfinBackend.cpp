@@ -17,7 +17,10 @@
 
 static const QString kModuleId = QStringLiteral("com.240mp.emby_jellyfin");
 static const QString kAuthFile = QStringLiteral("/emby_jellyfin_auth.json");
+static const QString kPlexAuthFile = QStringLiteral("/plex_auth.json");
 static const QString kOtaVideoQuality = QStringLiteral("480p");
+static const QString kProviderPlex = QStringLiteral("PLEX");
+static const QString kProviderEmby = QStringLiteral("EMBY/JELLYFIN");
 
 namespace {
 struct PlaybackLimits {
@@ -80,6 +83,74 @@ QString musicArtistName(const QJsonObject &item) {
     }
     return artist;
 }
+
+QStringList normalizedApiTypes(const QStringList &types) {
+    QSet<QString> result;
+    for (QString type : types) {
+        type = type.trimmed().toLower();
+        type.replace('-', '_');
+        type.replace(' ', '_');
+        if (type == QStringLiteral("movies"))
+            type = QStringLiteral("movie");
+        else if (type == QStringLiteral("tv") || type == QStringLiteral("tv_show") ||
+                 type == QStringLiteral("series") || type == QStringLiteral("shows"))
+            type = QStringLiteral("show");
+        else if (type == QStringLiteral("episodes"))
+            type = QStringLiteral("episode");
+        else if (type == QStringLiteral("videos"))
+            type = QStringLiteral("video");
+
+        if (type == QStringLiteral("movie") || type == QStringLiteral("show") ||
+            type == QStringLiteral("episode") || type == QStringLiteral("video"))
+            result.insert(type);
+    }
+
+    if (result.isEmpty()) {
+        result.insert(QStringLiteral("movie"));
+        result.insert(QStringLiteral("show"));
+        result.insert(QStringLiteral("episode"));
+        result.insert(QStringLiteral("video"));
+    }
+
+    QStringList out = result.values();
+    out.sort();
+    return out;
+}
+
+bool apiTypeAllowed(const QString &type, const QStringList &types) {
+    return types.contains(type);
+}
+
+QString embyIncludeTypesForApi(const QStringList &types) {
+    QStringList include;
+    if (types.contains(QStringLiteral("movie")))
+        include << QStringLiteral("Movie");
+    if (types.contains(QStringLiteral("show")))
+        include << QStringLiteral("Series");
+    if (types.contains(QStringLiteral("episode")))
+        include << QStringLiteral("Episode");
+    if (types.contains(QStringLiteral("video")))
+        include << QStringLiteral("Video");
+    include.removeDuplicates();
+    return include.join(',');
+}
+
+QVariantMap firstPlayableEpisodeFromItems(const QVariantList &items) {
+    QVariantMap target;
+    for (const QVariant &v : items) {
+        const QVariantMap item = v.toMap();
+        if (item.value(QStringLiteral("viewOffset")).toInt() > 0)
+            return item;
+    }
+    for (const QVariant &v : items) {
+        const QVariantMap item = v.toMap();
+        if (item.value(QStringLiteral("viewCount")).toInt() == 0)
+            return item;
+    }
+    if (!items.isEmpty())
+        target = items.first().toMap();
+    return target;
+}
 }
 
 EmbyJellyfinBackend::EmbyJellyfinBackend(const QString &appRoot,
@@ -104,6 +175,27 @@ void EmbyJellyfinBackend::saveAuth(const QJsonObject &auth) const {
     QFile f(m_dataRoot + kAuthFile);
     if (!f.open(QIODevice::WriteOnly)) {
         qWarning("[EmbyJellyfinBackend] Could not write auth file: %s",
+                 qPrintable(f.errorString()));
+        return;
+    }
+    f.write(QJsonDocument(auth).toJson(QJsonDocument::Indented));
+    f.setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner);
+}
+
+QJsonObject EmbyJellyfinBackend::loadPlexAuth() const {
+    QFile f(m_dataRoot + kPlexAuthFile);
+    if (!f.open(QIODevice::ReadOnly)) return {};
+
+    QJsonParseError err;
+    QJsonDocument doc = QJsonDocument::fromJson(f.readAll(), &err);
+    if (err.error != QJsonParseError::NoError || !doc.isObject()) return {};
+    return doc.object();
+}
+
+void EmbyJellyfinBackend::savePlexAuth(const QJsonObject &auth) const {
+    QFile f(m_dataRoot + kPlexAuthFile);
+    if (!f.open(QIODevice::WriteOnly)) {
+        qWarning("[EmbyJellyfinBackend] Could not write Plex auth file: %s",
                  qPrintable(f.errorString()));
         return;
     }
@@ -150,12 +242,40 @@ QString EmbyJellyfinBackend::clientId() const {
     return m_clientId;
 }
 
+QString EmbyJellyfinBackend::plexClientId() const {
+    if (!m_plexClientId.isEmpty()) return m_plexClientId;
+
+    QJsonObject auth = loadPlexAuth();
+    QString id = auth["client_identifier"].toString();
+    if (id.isEmpty()) {
+        id = QUuid::createUuid().toString(QUuid::WithoutBraces);
+        auth["client_identifier"] = id;
+        savePlexAuth(auth);
+    }
+    m_plexClientId = id;
+    return m_plexClientId;
+}
+
+QString EmbyJellyfinBackend::mediaProvider() const {
+    const QString raw = loadConfig()["modules"].toObject()
+        [kModuleId].toObject()["media_provider"].toString(kProviderEmby);
+    return raw.trimmed().toUpper() == kProviderPlex ? kProviderPlex : kProviderEmby;
+}
+
 QString EmbyJellyfinBackend::serverUrl() const {
     return loadAuth()["server_url"].toString();
 }
 
+QString EmbyJellyfinBackend::plexServerUrl() const {
+    return loadPlexAuth()["server_url"].toString();
+}
+
 QString EmbyJellyfinBackend::accessToken() const {
     return loadAuth()["access_token"].toString();
+}
+
+QString EmbyJellyfinBackend::plexToken() const {
+    return loadPlexAuth()["access_token"].toString();
 }
 
 QString EmbyJellyfinBackend::userId() const {
@@ -173,8 +293,8 @@ QNetworkRequest EmbyJellyfinBackend::apiRequest(const QUrl &url,
     req.setRawHeader("Accept", "application/json");
 
     QString auth = QStringLiteral(
-        "MediaBrowser Client=\"240-MP\", Device=\"%1\", DeviceId=\"%2\", Version=\"%3\"")
-        .arg(QSysInfo::machineHostName().isEmpty() ? QStringLiteral("240-MP")
+        "MediaBrowser Client=\"CRT Station\", Device=\"%1\", DeviceId=\"%2\", Version=\"%3\"")
+        .arg(QSysInfo::machineHostName().isEmpty() ? QStringLiteral("CRT Station")
                                                    : QSysInfo::machineHostName(),
              clientId(),
              QCoreApplication::applicationVersion());
@@ -212,12 +332,93 @@ QUrl EmbyJellyfinBackend::apiUrl(const QString &path) const {
     return QUrl(base + path);
 }
 
+QNetworkRequest EmbyJellyfinBackend::plexTvRequest(const QUrl &url,
+                                                   const QString &token) const {
+    QNetworkRequest req(url);
+    req.setRawHeader("Accept", "application/json");
+    req.setRawHeader("X-Plex-Product", "CRT Station");
+    req.setRawHeader("X-Plex-Version", QCoreApplication::applicationVersion().toUtf8());
+    req.setRawHeader("X-Plex-Client-Identifier", plexClientId().toUtf8());
+    req.setRawHeader("X-Plex-Platform", "Qt");
+    req.setRawHeader("X-Plex-Device", "CRT Station");
+    req.setRawHeader("X-Plex-Device-Name",
+                     QSysInfo::machineHostName().isEmpty()
+                         ? QByteArray("CRT Station")
+                         : QSysInfo::machineHostName().toUtf8());
+    req.setRawHeader("X-Plex-Provides", "player");
+    if (!token.isEmpty())
+        req.setRawHeader("X-Plex-Token", token.toUtf8());
+    return req;
+}
+
+QNetworkReply *EmbyJellyfinBackend::plexTvGet(const QUrl &url, const QString &token) {
+    return m_nam->get(plexTvRequest(url, token));
+}
+
+QNetworkReply *EmbyJellyfinBackend::plexTvPostForm(const QUrl &url,
+                                                   const QByteArray &body,
+                                                   const QString &token) {
+    QNetworkRequest req = plexTvRequest(url, token);
+    req.setHeader(QNetworkRequest::ContentTypeHeader, "application/x-www-form-urlencoded");
+    return m_nam->post(req, body);
+}
+
+QNetworkRequest EmbyJellyfinBackend::plexServerRequest(const QUrl &url) const {
+    QNetworkRequest req(url);
+    req.setRawHeader("Accept", "application/xml");
+    req.setRawHeader("X-Plex-Product", "CRT Station");
+    req.setRawHeader("X-Plex-Version", QCoreApplication::applicationVersion().toUtf8());
+    req.setRawHeader("X-Plex-Client-Identifier", plexClientId().toUtf8());
+    req.setRawHeader("X-Plex-Token", plexToken().toUtf8());
+    return req;
+}
+
+QNetworkReply *EmbyJellyfinBackend::plexServerGet(const QUrl &url) {
+    return m_nam->get(plexServerRequest(plexUrlWithToken(url)));
+}
+
+QUrl EmbyJellyfinBackend::plexApiUrl(const QString &path) const {
+    const QString base = plexServerUrl();
+    if (base.isEmpty()) return {};
+    return QUrl(base + path);
+}
+
+QUrl EmbyJellyfinBackend::plexUrlWithToken(QUrl url) const {
+    const QString token = plexToken();
+    if (token.isEmpty()) return url;
+    QUrlQuery q(url);
+    if (!q.hasQueryItem("X-Plex-Token"))
+        q.addQueryItem("X-Plex-Token", token);
+    url.setQuery(q);
+    return url;
+}
+
+QString EmbyJellyfinBackend::plexAbsoluteUrl(const QString &pathOrUrl) const {
+    if (pathOrUrl.startsWith("http://", Qt::CaseInsensitive) ||
+        pathOrUrl.startsWith("https://", Qt::CaseInsensitive))
+        return plexUrlWithToken(QUrl(pathOrUrl)).toString();
+    return plexUrlWithToken(plexApiUrl(pathOrUrl)).toString();
+}
+
 qint64 EmbyJellyfinBackend::ticksToMs(const QJsonValue &ticks) {
     return static_cast<qint64>(ticks.toDouble() / 10000.0);
 }
 
 qint64 EmbyJellyfinBackend::msToTicks(int ms) {
     return static_cast<qint64>(ms) * 10000;
+}
+
+QString EmbyJellyfinBackend::plexAttr(const QXmlStreamAttributes &attrs,
+                                      const QString &name) {
+    return attrs.value(name).toString();
+}
+
+int EmbyJellyfinBackend::plexIntAttr(const QXmlStreamAttributes &attrs,
+                                     const QString &name,
+                                     int fallback) {
+    bool ok = false;
+    const int value = attrs.value(name).toInt(&ok);
+    return ok ? value : fallback;
 }
 
 QString EmbyJellyfinBackend::msToDisplay(int ms) {
@@ -245,6 +446,14 @@ bool EmbyJellyfinBackend::codecNeedsTranscode(const QString &codec) {
 }
 
 QString EmbyJellyfinBackend::get_auth_state() {
+    if (mediaProvider() == kProviderPlex) {
+        QJsonObject auth = loadPlexAuth();
+        return auth["server_url"].toString().isEmpty() ||
+               auth["access_token"].toString().isEmpty()
+            ? QStringLiteral("none")
+            : QStringLiteral("authed");
+    }
+
     QJsonObject auth = loadAuth();
     return auth["server_url"].toString().isEmpty() ||
            auth["access_token"].toString().isEmpty() ||
@@ -254,17 +463,45 @@ QString EmbyJellyfinBackend::get_auth_state() {
 }
 
 QString EmbyJellyfinBackend::get_active_user_name() {
+    if (mediaProvider() == kProviderPlex)
+        return loadPlexAuth()["username"].toString();
     return loadAuth()["username"].toString();
 }
 
 QString EmbyJellyfinBackend::get_active_server_name() {
+    if (mediaProvider() == kProviderPlex) {
+        QJsonObject auth = loadPlexAuth();
+        QString name = auth["server_name"].toString();
+        return name.isEmpty() ? auth["server_url"].toString() : name;
+    }
+
     QJsonObject auth = loadAuth();
     QString name = auth["server_name"].toString();
     return name.isEmpty() ? auth["server_url"].toString() : name;
 }
 
 QString EmbyJellyfinBackend::get_saved_server_url() {
+    if (mediaProvider() == kProviderPlex)
+        return loadPlexAuth()["server_url"].toString();
     return loadAuth()["server_url"].toString();
+}
+
+QString EmbyJellyfinBackend::get_media_provider() {
+    return mediaProvider();
+}
+
+void EmbyJellyfinBackend::onSettingChanged(const QString &moduleId,
+                                           const QString &key,
+                                           const QVariant &value) {
+    Q_UNUSED(value)
+    if (moduleId != kModuleId || key != QLatin1String("media_provider"))
+        return;
+
+    m_plexPinId = 0;
+    m_plexPinCode.clear();
+    m_pendingPlexToken.clear();
+    m_pendingPlexServers.clear();
+    emit authStateChanged();
 }
 
 void EmbyJellyfinBackend::login(const QString &rawServerUrl,
@@ -341,7 +578,217 @@ void EmbyJellyfinBackend::fetchServerInfoThenFinishLogin(QJsonObject auth) {
     });
 }
 
+void EmbyJellyfinBackend::start_plex_pin_login() {
+    m_plexPinId = 0;
+    m_plexPinCode.clear();
+    m_pendingPlexToken.clear();
+    m_pendingPlexServers.clear();
+
+    QUrlQuery form;
+    form.addQueryItem("strong", "false");
+    auto *reply = plexTvPostForm(QUrl("https://plex.tv/api/v2/pins"),
+                                 form.query(QUrl::FullyEncoded).toUtf8());
+    connect(reply, &QNetworkReply::finished, this, [this, reply]() {
+        reply->deleteLater();
+        const QByteArray bytes = reply->readAll();
+        if (reply->error() != QNetworkReply::NoError) {
+            emit errorOccurred("PLEX SIGN IN FAILED: " + reply->errorString());
+            return;
+        }
+
+        const QJsonObject data = QJsonDocument::fromJson(bytes).object();
+        m_plexPinId = data["id"].toInt();
+        m_plexPinCode = data["code"].toString();
+        if (m_plexPinId <= 0 || m_plexPinCode.isEmpty()) {
+            emit errorOccurred("PLEX SIGN IN FAILED: EMPTY PIN RESPONSE");
+            return;
+        }
+
+        emit plexPinReady(m_plexPinCode, QStringLiteral("https://plex.tv/link"));
+    });
+}
+
+void EmbyJellyfinBackend::poll_plex_pin_login() {
+    if (m_plexPinId <= 0 || m_plexPinCode.isEmpty())
+        return;
+
+    QUrl url(QStringLiteral("https://plex.tv/api/v2/pins/%1").arg(m_plexPinId));
+    QUrlQuery q;
+    q.addQueryItem("code", m_plexPinCode);
+    url.setQuery(q);
+
+    auto *reply = plexTvGet(url);
+    connect(reply, &QNetworkReply::finished, this, [this, reply]() {
+        reply->deleteLater();
+        const QByteArray bytes = reply->readAll();
+        if (reply->error() != QNetworkReply::NoError) {
+            emit errorOccurred("PLEX SIGN IN CHECK FAILED: " + reply->errorString());
+            return;
+        }
+
+        const QJsonObject data = QJsonDocument::fromJson(bytes).object();
+        const QString token = data["authToken"].toString();
+        if (token.isEmpty())
+            return;
+
+        m_plexPinId = 0;
+        m_plexPinCode.clear();
+        finishPlexLogin(token);
+    });
+}
+
+void EmbyJellyfinBackend::finishPlexLogin(const QString &token) {
+    if (token.isEmpty()) {
+        emit errorOccurred("PLEX SIGN IN FAILED: EMPTY TOKEN");
+        return;
+    }
+
+    QJsonObject auth = loadPlexAuth();
+    auth["access_token"] = token;
+    auth.remove("server_url");
+    auth.remove("server_name");
+    auth.remove("machine_identifier");
+    savePlexAuth(auth);
+
+    auto *reply = plexTvGet(QUrl("https://plex.tv/api/v2/user"), token);
+    connect(reply, &QNetworkReply::finished, this, [this, reply, token]() {
+        reply->deleteLater();
+        if (reply->error() == QNetworkReply::NoError) {
+            const QJsonObject user = QJsonDocument::fromJson(reply->readAll()).object();
+            QJsonObject auth = loadPlexAuth();
+            auth["access_token"] = token;
+            auth["username"] = user["username"].toString(user["email"].toString());
+            savePlexAuth(auth);
+        }
+
+        fetchPlexServers(token);
+    });
+}
+
+void EmbyJellyfinBackend::fetchPlexServers(const QString &token) {
+    QUrl url("https://plex.tv/api/v2/resources");
+    QUrlQuery q;
+    q.addQueryItem("includeHttps", "1");
+    q.addQueryItem("includeRelay", "0");
+    url.setQuery(q);
+
+    auto *reply = plexTvGet(url, token);
+    connect(reply, &QNetworkReply::finished, this, [this, reply]() {
+        reply->deleteLater();
+        const QByteArray bytes = reply->readAll();
+        if (reply->error() != QNetworkReply::NoError) {
+            emit errorOccurred("PLEX SERVER DISCOVERY FAILED: " + reply->errorString());
+            return;
+        }
+
+        const QJsonArray resources = QJsonDocument::fromJson(bytes).array();
+        QVariantList servers;
+        for (const auto &v : resources) {
+            const QJsonObject resource = v.toObject();
+            const QStringList provides = resource["provides"].toString().split(',', Qt::SkipEmptyParts);
+            bool providesServer = false;
+            for (const QString &part : provides) {
+                if (part.trimmed() == QLatin1String("server")) {
+                    providesServer = true;
+                    break;
+                }
+            }
+            if (!providesServer)
+                continue;
+            if (!resource["owned"].toBool(false))
+                continue;
+
+            const QString name = resource["name"].toString(resource["product"].toString());
+            const QString machineId = resource["clientIdentifier"].toString();
+            const QJsonArray connections = resource["connections"].toArray();
+            QVariantList candidates;
+            for (const auto &cv : connections) {
+                const QJsonObject c = cv.toObject();
+                const QString uri = c["uri"].toString();
+                if (uri.isEmpty())
+                    continue;
+                candidates.append(QVariantMap{
+                    {"uri", uri},
+                    {"local", c["local"].toBool(false)},
+                    {"relay", c["relay"].toBool(false)}
+                });
+            }
+
+            std::sort(candidates.begin(), candidates.end(), [](const QVariant &a, const QVariant &b) {
+                const QVariantMap left = a.toMap();
+                const QVariantMap right = b.toMap();
+                if (left["local"].toBool() != right["local"].toBool())
+                    return left["local"].toBool();
+                if (left["relay"].toBool() != right["relay"].toBool())
+                    return !left["relay"].toBool();
+                return left["uri"].toString() < right["uri"].toString();
+            });
+
+            if (candidates.isEmpty())
+                continue;
+
+            const QVariantMap best = candidates.first().toMap();
+            servers.append(QVariantMap{
+                {"machineIdentifier", machineId},
+                {"name", name.toUpper()},
+                {"url", best["uri"].toString()},
+                {"local", best["local"].toBool()},
+                {"relay", best["relay"].toBool()}
+            });
+        }
+
+        if (servers.isEmpty()) {
+            emit errorOccurred("NO OWNED PLEX SERVERS FOUND");
+            return;
+        }
+
+        m_pendingPlexServers = servers;
+        if (servers.size() == 1) {
+            saveSelectedPlexServer(servers.first().toMap());
+            emit authSuccess();
+            emit authStateChanged();
+            return;
+        }
+
+        emit plexServersLoaded(servers);
+    });
+}
+
+void EmbyJellyfinBackend::select_plex_server(const QString &machineIdentifier) {
+    for (const auto &v : m_pendingPlexServers) {
+        const QVariantMap server = v.toMap();
+        if (server["machineIdentifier"].toString() == machineIdentifier) {
+            saveSelectedPlexServer(server);
+            emit authSuccess();
+            emit authStateChanged();
+            return;
+        }
+    }
+    emit errorOccurred("PLEX SERVER WAS NOT FOUND");
+}
+
+void EmbyJellyfinBackend::saveSelectedPlexServer(const QVariantMap &server) {
+    QJsonObject auth = loadPlexAuth();
+    auth["server_url"] = normalizeServerUrl(server["url"].toString());
+    auth["server_name"] = server["name"].toString();
+    auth["machine_identifier"] = server["machineIdentifier"].toString();
+    savePlexAuth(auth);
+    m_pendingPlexServers.clear();
+}
+
 void EmbyJellyfinBackend::logout() {
+    if (mediaProvider() == kProviderPlex) {
+        QFile::remove(m_dataRoot + kPlexAuthFile);
+        m_plexClientId.clear();
+        m_plexPinId = 0;
+        m_plexPinCode.clear();
+        m_pendingPlexToken.clear();
+        m_pendingPlexServers.clear();
+        emit logoutComplete();
+        emit authStateChanged();
+        return;
+    }
+
     QString token = accessToken();
     if (!token.isEmpty()) {
         auto *reply = apiPostJson(apiUrl("/Sessions/Logout"), token, QByteArray("{}"));
@@ -451,7 +898,457 @@ QVariantList EmbyJellyfinBackend::formatItems(const QJsonArray &items) const {
     return result;
 }
 
+QVariantMap EmbyJellyfinBackend::formatApiMediaResult(const QVariantMap &item) const {
+    const QString ratingKey = item.value(QStringLiteral("ratingKey")).toString();
+    const QString kind = item.value(QStringLiteral("type")).toString();
+    QVariantMap result;
+    result[QStringLiteral("id")] = QStringLiteral("vod:%1:%2").arg(
+        kind,
+        QString::fromLatin1(QUrl::toPercentEncoding(ratingKey)));
+    result[QStringLiteral("module")] = QStringLiteral("video_on_demand");
+    result[QStringLiteral("provider")] = mediaProvider().toLower();
+    result[QStringLiteral("kind")] = kind;
+    result[QStringLiteral("title")] = item.value(QStringLiteral("title")).toString();
+    result[QStringLiteral("rating_key")] = ratingKey;
+    if (item.contains(QStringLiteral("year")))
+        result[QStringLiteral("year")] = item.value(QStringLiteral("year"));
+    if (item.contains(QStringLiteral("durationDisplay")))
+        result[QStringLiteral("duration")] = item.value(QStringLiteral("durationDisplay"));
+    if (item.contains(QStringLiteral("grandparentTitle")) &&
+        !item.value(QStringLiteral("grandparentTitle")).toString().isEmpty())
+        result[QStringLiteral("series")] = item.value(QStringLiteral("grandparentTitle"));
+    if (item.contains(QStringLiteral("parentTitle")) &&
+        !item.value(QStringLiteral("parentTitle")).toString().isEmpty())
+        result[QStringLiteral("season")] = item.value(QStringLiteral("parentTitle"));
+    return result;
+}
+
+QVariantList EmbyJellyfinBackend::apiFilterMediaResults(const QVariantList &items,
+                                                        const QStringList &types,
+                                                        int limit) const {
+    QVariantList result;
+    const int maxResults = std::max(1, std::min(limit <= 0 ? 10 : limit, 50));
+    for (const QVariant &value : items) {
+        const QVariantMap item = value.toMap();
+        const QString kind = item.value(QStringLiteral("type")).toString();
+        const QString ratingKey = item.value(QStringLiteral("ratingKey")).toString();
+        if (ratingKey.isEmpty() || !apiTypeAllowed(kind, types))
+            continue;
+        result.append(formatApiMediaResult(item));
+        if (result.size() >= maxResults)
+            break;
+    }
+    return result;
+}
+
+QVariantMap EmbyJellyfinBackend::formatPlexItem(const QXmlStreamAttributes &attrs) const {
+    const QString rawType = plexAttr(attrs, "type");
+    QString type = rawType;
+    if (rawType == "movie") type = "movie";
+    else if (rawType == "show") type = "show";
+    else if (rawType == "season") type = "season";
+    else if (rawType == "episode") type = "episode";
+    else if (rawType == "album") type = "album";
+    else if (rawType == "track") type = "track";
+
+    const int duration = plexIntAttr(attrs, "duration");
+    const int viewOffset = plexIntAttr(attrs, "viewOffset");
+    const int leafCount = plexIntAttr(attrs, "leafCount", plexIntAttr(attrs, "childCount"));
+    const int viewedLeafCount = plexIntAttr(attrs, "viewedLeafCount");
+
+    return QVariantMap{
+        {"ratingKey", plexAttr(attrs, "ratingKey")},
+        {"key", plexAttr(attrs, "key")},
+        {"title", plexAttr(attrs, "title").toUpper()},
+        {"type", type},
+        {"year", plexIntAttr(attrs, "year")},
+        {"duration", duration},
+        {"durationDisplay", msToDisplay(duration)},
+        {"summary", plexAttr(attrs, "summary")},
+        {"viewOffset", viewOffset},
+        {"viewCount", plexIntAttr(attrs, "viewCount")},
+        {"leafCount", leafCount},
+        {"viewedLeafCount", viewedLeafCount},
+        {"index", plexIntAttr(attrs, "index")},
+        {"parentIndex", plexIntAttr(attrs, "parentIndex")},
+        {"parentRatingKey", plexAttr(attrs, "parentRatingKey")},
+        {"grandparentRatingKey", plexAttr(attrs, "grandparentRatingKey")},
+        {"grandparentTitle", plexAttr(attrs, "grandparentTitle").toUpper()},
+        {"parentTitle", plexAttr(attrs, "parentTitle").toUpper()},
+        {"originallyAvailableAt", plexAttr(attrs, "originallyAvailableAt")}
+    };
+}
+
+QVariantMap EmbyJellyfinBackend::formatPlexMusicAlbum(const QXmlStreamAttributes &attrs) const {
+    return QVariantMap{
+        {"ratingKey", plexAttr(attrs, "ratingKey")},
+        {"key", plexAttr(attrs, "ratingKey")},
+        {"title", plexAttr(attrs, "title").toUpper()},
+        {"artist", plexAttr(attrs, "parentTitle").toUpper()},
+        {"type", "album"},
+        {"year", plexIntAttr(attrs, "year")},
+        {"duration", plexIntAttr(attrs, "duration")},
+        {"durationDisplay", msToDisplay(plexIntAttr(attrs, "duration"))},
+        {"leafCount", plexIntAttr(attrs, "leafCount", plexIntAttr(attrs, "childCount"))}
+    };
+}
+
+QVariantList EmbyJellyfinBackend::parsePlexLibraries(const QByteArray &body,
+                                                     bool musicOnly) const {
+    QVariantList result;
+    QXmlStreamReader xml(body);
+    while (!xml.atEnd()) {
+        xml.readNext();
+        if (!xml.isStartElement() || xml.name() != QStringLiteral("Directory"))
+            continue;
+
+        const QXmlStreamAttributes attrs = xml.attributes();
+        const QString key = plexAttr(attrs, "key");
+        const QString type = plexAttr(attrs, "type");
+        if (key.isEmpty())
+            continue;
+
+        if (musicOnly) {
+            if (type != "artist")
+                continue;
+        } else if (type != "movie" && type != "show" && type != "other") {
+            continue;
+        }
+
+        result.append(QVariantMap{
+            {"key", key},
+            {"title", plexAttr(attrs, "title").toUpper()},
+            {"sectionId", key},
+            {"sectionType", type == "artist" ? QStringLiteral("music") : type}
+        });
+    }
+    return result;
+}
+
+QVariantList EmbyJellyfinBackend::parsePlexItems(const QByteArray &body) const {
+    QVariantList result;
+    QXmlStreamReader xml(body);
+    while (!xml.atEnd()) {
+        xml.readNext();
+        if (!xml.isStartElement())
+            continue;
+
+        const auto name = xml.name();
+        if (name == QStringLiteral("Video") || name == QStringLiteral("Directory")) {
+            const QVariantMap item = formatPlexItem(xml.attributes());
+            if (!item["ratingKey"].toString().isEmpty())
+                result.append(item);
+        }
+    }
+    return result;
+}
+
+QVariantMap EmbyJellyfinBackend::parsePlexDetail(const QByteArray &body) const {
+    QVariantMap detail;
+    QVariantList audioStreams;
+    QVariantList subtitleStreams{
+        QVariantMap{{"id","0"}, {"displayTitle","OFF"}, {"language",""}, {"subUrl",""}}
+    };
+
+    QXmlStreamReader xml(body);
+    bool inTargetMedia = false;
+    bool havePart = false;
+    QString selectedAudioId;
+    QString selectedSubId = "0";
+
+    while (!xml.atEnd()) {
+        xml.readNext();
+        if (!xml.isStartElement())
+            continue;
+
+        const auto name = xml.name();
+        const QXmlStreamAttributes attrs = xml.attributes();
+        if ((name == QStringLiteral("Video") || name == QStringLiteral("Track")) &&
+            detail.isEmpty()) {
+            detail = formatPlexItem(attrs);
+            detail["partKey"] = QString{};
+            detail["partId"] = QString{};
+            detail["forceTranscode"] = false;
+            detail["audioStreams"] = QVariantList{};
+            detail["subtitleStreams"] = subtitleStreams;
+            inTargetMedia = true;
+        } else if (name == QStringLiteral("Media") && inTargetMedia) {
+            detail["mediaSourceId"] = plexAttr(attrs, "id");
+        } else if (name == QStringLiteral("Part") && inTargetMedia && !havePart) {
+            const QString partId = plexAttr(attrs, "id");
+            const QString partKey = plexAttr(attrs, "key");
+            detail["partId"] = partId;
+            detail["partKey"] = partKey;
+            havePart = true;
+        } else if (name == QStringLiteral("Stream") && inTargetMedia && havePart) {
+            const QString streamType = plexAttr(attrs, "streamType");
+            const QString id = plexAttr(attrs, "id");
+            const QString language = plexAttr(attrs, "languageCode").isEmpty()
+                ? plexAttr(attrs, "language")
+                : plexAttr(attrs, "languageCode");
+            QString display = plexAttr(attrs, "displayTitle");
+            if (display.isEmpty())
+                display = plexAttr(attrs, "codec").toUpper();
+            if (display.isEmpty())
+                display = streamType == "2" ? QStringLiteral("AUDIO") : QStringLiteral("SUBTITLE");
+
+            if (streamType == "2") {
+                if (selectedAudioId.isEmpty() || plexAttr(attrs, "selected") == "1")
+                    selectedAudioId = id;
+                audioStreams.append(QVariantMap{
+                    {"id", id},
+                    {"displayTitle", display.toUpper()},
+                    {"language", language},
+                    {"codec", plexAttr(attrs, "codec")}
+                });
+            } else if (streamType == "3") {
+                QString subUrl;
+                const QString key = plexAttr(attrs, "key");
+                if (!key.isEmpty())
+                    subUrl = plexAbsoluteUrl(key);
+                if (plexAttr(attrs, "selected") == "1")
+                    selectedSubId = id;
+                subtitleStreams.append(QVariantMap{
+                    {"id", id},
+                    {"displayTitle", display.toUpper()},
+                    {"language", language},
+                    {"codec", plexAttr(attrs, "codec")},
+                    {"subUrl", subUrl},
+                    {"imageSubtitle", false}
+                });
+            }
+        }
+    }
+
+    if (!detail.isEmpty()) {
+        detail["audioStreams"] = audioStreams;
+        detail["subtitleStreams"] = subtitleStreams;
+        detail["selectedAudioId"] = selectedAudioId;
+        detail["selectedSubtitleId"] = selectedSubId;
+    }
+    return detail;
+}
+
+void EmbyJellyfinBackend::plexLoadLibraries() {
+    auto *reply = plexServerGet(plexApiUrl("/library/sections"));
+    connect(reply, &QNetworkReply::finished, this, [this, reply]() {
+        reply->deleteLater();
+        if (reply->error() != QNetworkReply::NoError) {
+            emit errorOccurred("LOAD PLEX LIBRARIES FAILED: " + reply->errorString());
+            return;
+        }
+
+        QVariantList items = parsePlexLibraries(reply->readAll(), false);
+        const QJsonObject enabled = loadConfig()["modules"].toObject()
+                                    [kModuleId].toObject()["libraries"].toObject();
+        if (!enabled.isEmpty()) {
+            QVariantList filtered;
+            for (const auto &v : items) {
+                const QVariantMap item = v.toMap();
+                const QString id = item["sectionId"].toString();
+                if (enabled[id].toBool(true))
+                    filtered.append(item);
+            }
+            items = filtered;
+        }
+        emit librariesLoaded(items);
+    });
+}
+
+void EmbyJellyfinBackend::plexLoadMusicLibraries() {
+    auto *reply = plexServerGet(plexApiUrl("/library/sections"));
+    connect(reply, &QNetworkReply::finished, this, [this, reply]() {
+        reply->deleteLater();
+        if (reply->error() != QNetworkReply::NoError) {
+            emit errorOccurred("LOAD PLEX MUSIC LIBRARIES FAILED: " + reply->errorString());
+            return;
+        }
+        emit musicLibrariesLoaded(parsePlexLibraries(reply->readAll(), true));
+    });
+}
+
+void EmbyJellyfinBackend::plexLoadMusicAlbums(const QString &sectionId) {
+    auto *reply = plexServerGet(plexApiUrl(QStringLiteral("/library/sections/%1/albums").arg(sectionId)));
+    connect(reply, &QNetworkReply::finished, this, [this, reply]() {
+        reply->deleteLater();
+        if (reply->error() != QNetworkReply::NoError) {
+            emit errorOccurred("LOAD PLEX ALBUMS FAILED: " + reply->errorString());
+            return;
+        }
+
+        QVariantList albums;
+        QXmlStreamReader xml(reply->readAll());
+        while (!xml.atEnd()) {
+            xml.readNext();
+            if (xml.isStartElement() && xml.name() == QStringLiteral("Directory")) {
+                const QVariantMap album = formatPlexMusicAlbum(xml.attributes());
+                if (!album["ratingKey"].toString().isEmpty())
+                    albums.append(album);
+            }
+        }
+        emit musicAlbumsLoaded(albums);
+    });
+}
+
+void EmbyJellyfinBackend::plexLoadMusicTracks(const QString &albumId) {
+    auto *reply = plexServerGet(plexApiUrl(QStringLiteral("/library/metadata/%1/children").arg(albumId)));
+    connect(reply, &QNetworkReply::finished, this, [this, reply]() {
+        reply->deleteLater();
+        if (reply->error() != QNetworkReply::NoError) {
+            emit errorOccurred("LOAD PLEX TRACKS FAILED: " + reply->errorString());
+            return;
+        }
+
+        QVariantList tracks;
+        QXmlStreamReader xml(reply->readAll());
+        QXmlStreamAttributes currentTrack;
+        bool inTrack = false;
+        while (!xml.atEnd()) {
+            xml.readNext();
+            if (xml.isStartElement() && xml.name() == QStringLiteral("Track")) {
+                currentTrack = xml.attributes();
+                inTrack = true;
+            } else if (inTrack && xml.isStartElement() && xml.name() == QStringLiteral("Part")) {
+                const QString ratingKey = plexAttr(currentTrack, "ratingKey");
+                if (!ratingKey.isEmpty()) {
+                    const int duration = plexIntAttr(currentTrack, "duration");
+                    tracks.append(QVariantMap{
+                        {"ratingKey", ratingKey},
+                        {"partKey", xml.attributes().value("key").toString()},
+                        {"title", plexAttr(currentTrack, "title").toUpper()},
+                        {"artist", plexAttr(currentTrack, "grandparentTitle").toUpper()},
+                        {"album", plexAttr(currentTrack, "parentTitle").toUpper()},
+                        {"type", "track"},
+                        {"index", plexIntAttr(currentTrack, "index")},
+                        {"parentIndex", plexIntAttr(currentTrack, "parentIndex")},
+                        {"duration", duration},
+                        {"durationDisplay", msToDisplay(duration)}
+                    });
+                }
+                inTrack = false;
+            } else if (xml.isEndElement() && xml.name() == QStringLiteral("Track")) {
+                inTrack = false;
+            }
+        }
+        emit musicTracksLoaded(tracks);
+    });
+}
+
+void EmbyJellyfinBackend::plexLoadLibraryAll(const QString &sectionId) {
+    auto *reply = plexServerGet(plexApiUrl(QStringLiteral("/library/sections/%1/all").arg(sectionId)));
+    connect(reply, &QNetworkReply::finished, this, [this, reply]() {
+        reply->deleteLater();
+        if (reply->error() != QNetworkReply::NoError) {
+            emit errorOccurred("LOAD PLEX ITEMS FAILED: " + reply->errorString());
+            return;
+        }
+        emit itemsLoaded(parsePlexItems(reply->readAll()));
+    });
+}
+
+void EmbyJellyfinBackend::plexLoadChildren(const QString &ratingKey) {
+    auto *reply = plexServerGet(plexApiUrl(QStringLiteral("/library/metadata/%1/children").arg(ratingKey)));
+    connect(reply, &QNetworkReply::finished, this, [this, reply]() {
+        reply->deleteLater();
+        if (reply->error() != QNetworkReply::NoError) {
+            emit errorOccurred("LOAD PLEX CHILDREN FAILED: " + reply->errorString());
+            return;
+        }
+        emit childrenLoaded(parsePlexItems(reply->readAll()));
+    });
+}
+
+void EmbyJellyfinBackend::plexLoadItemDetail(const QString &ratingKey) {
+    auto *reply = plexServerGet(plexApiUrl(QStringLiteral("/library/metadata/%1").arg(ratingKey)));
+    connect(reply, &QNetworkReply::finished, this, [this, reply]() {
+        reply->deleteLater();
+        if (reply->error() != QNetworkReply::NoError) {
+            emit errorOccurred("LOAD PLEX ITEM FAILED: " + reply->errorString());
+            return;
+        }
+        const QVariantMap detail = parsePlexDetail(reply->readAll());
+        if (detail.isEmpty()) {
+            emit errorOccurred("LOAD PLEX ITEM FAILED: EMPTY DETAIL");
+            return;
+        }
+        emit itemLoaded(detail);
+    });
+}
+
+void EmbyJellyfinBackend::plexBuildStreamUrl(const QString &ratingKey,
+                                             const QString &partKey) {
+    Q_UNUSED(ratingKey);
+    if (partKey.isEmpty()) {
+        emit errorOccurred("PLEX STREAM FAILED: EMPTY PART KEY");
+        return;
+    }
+    emit streamUrlReady(plexAbsoluteUrl(partKey), {});
+}
+
+void EmbyJellyfinBackend::plexBuildAudioStreamUrl(const QString &ratingKey,
+                                                  const QString &partKey) {
+    if (partKey.isEmpty()) {
+        emit errorOccurred("PLEX AUDIO STREAM FAILED: EMPTY PART KEY");
+        return;
+    }
+    emit audioStreamUrlReady(ratingKey, plexAbsoluteUrl(partKey), {});
+}
+
+void EmbyJellyfinBackend::plexLoadNextEpisode(const QString &currentRatingKey) {
+    auto *detailReply = plexServerGet(plexApiUrl(QStringLiteral("/library/metadata/%1").arg(currentRatingKey)));
+    connect(detailReply, &QNetworkReply::finished, this, [this, detailReply]() {
+        detailReply->deleteLater();
+        if (detailReply->error() != QNetworkReply::NoError) {
+            emit nextEpisodeReady(QVariantMap{});
+            return;
+        }
+        const QVariantMap current = parsePlexDetail(detailReply->readAll());
+        const QString seasonKey = current["parentRatingKey"].toString();
+        const int currentIndex = current["index"].toInt();
+        if (seasonKey.isEmpty()) {
+            emit nextEpisodeReady(QVariantMap{});
+            return;
+        }
+
+        auto *seasonReply = plexServerGet(plexApiUrl(QStringLiteral("/library/metadata/%1/children").arg(seasonKey)));
+        connect(seasonReply, &QNetworkReply::finished, this, [this, seasonReply, currentIndex]() {
+            seasonReply->deleteLater();
+            if (seasonReply->error() != QNetworkReply::NoError) {
+                emit nextEpisodeReady(QVariantMap{});
+                return;
+            }
+            const QVariantList episodes = parsePlexItems(seasonReply->readAll());
+            for (const auto &v : episodes) {
+                const QVariantMap ep = v.toMap();
+                if (ep["index"].toInt() > currentIndex) {
+                    auto *nextReply = plexServerGet(plexApiUrl(QStringLiteral("/library/metadata/%1")
+                                                               .arg(ep["ratingKey"].toString())));
+                    connect(nextReply, &QNetworkReply::finished, this, [this, nextReply]() {
+                        nextReply->deleteLater();
+                        if (nextReply->error() != QNetworkReply::NoError) {
+                            emit nextEpisodeReady(QVariantMap{});
+                            return;
+                        }
+                        emit nextEpisodeReady(parsePlexDetail(nextReply->readAll()));
+                    });
+                    return;
+                }
+            }
+            emit nextEpisodeReady(QVariantMap{});
+        });
+    });
+}
+
 void EmbyJellyfinBackend::load_music_libraries() {
+    if (mediaProvider() == kProviderPlex) {
+        if (get_auth_state() != "authed") {
+            emit errorOccurred("NOT SIGNED IN");
+            return;
+        }
+        plexLoadMusicLibraries();
+        return;
+    }
+
     if (get_auth_state() != "authed") {
         emit errorOccurred("NOT SIGNED IN");
         return;
@@ -488,6 +1385,15 @@ void EmbyJellyfinBackend::load_music_libraries() {
 }
 
 void EmbyJellyfinBackend::load_music_albums(const QString &sectionId) {
+    if (mediaProvider() == kProviderPlex) {
+        if (get_auth_state() != "authed") {
+            emit errorOccurred("NOT SIGNED IN");
+            return;
+        }
+        plexLoadMusicAlbums(sectionId);
+        return;
+    }
+
     if (get_auth_state() != "authed") {
         emit errorOccurred("NOT SIGNED IN");
         return;
@@ -515,6 +1421,15 @@ void EmbyJellyfinBackend::load_music_albums(const QString &sectionId) {
 }
 
 void EmbyJellyfinBackend::load_music_tracks(const QString &sectionId) {
+    if (mediaProvider() == kProviderPlex) {
+        if (get_auth_state() != "authed") {
+            emit errorOccurred("NOT SIGNED IN");
+            return;
+        }
+        plexLoadMusicTracks(sectionId);
+        return;
+    }
+
     if (get_auth_state() != "authed") {
         emit errorOccurred("NOT SIGNED IN");
         return;
@@ -629,6 +1544,15 @@ void EmbyJellyfinBackend::load_live_tv_channels() {
 }
 
 void EmbyJellyfinBackend::load_libraries() {
+    if (mediaProvider() == kProviderPlex) {
+        if (get_auth_state() != "authed") {
+            emit errorOccurred("NOT SIGNED IN");
+            return;
+        }
+        plexLoadLibraries();
+        return;
+    }
+
     if (get_auth_state() != "authed") {
         emit errorOccurred("NOT SIGNED IN");
         return;
@@ -699,6 +1623,11 @@ void EmbyJellyfinBackend::load_libraries() {
 }
 
 void EmbyJellyfinBackend::load_continue_watching() {
+    if (mediaProvider() == kProviderPlex) {
+        emit continueWatchingLoaded(QVariantList{});
+        return;
+    }
+
     QUrl url = apiUrl("/Users/" + userId() + "/Items/Resume");
     QUrlQuery q;
     q.addQueryItem("MediaTypes", "Video");
@@ -720,6 +1649,16 @@ void EmbyJellyfinBackend::load_continue_watching() {
 
 void EmbyJellyfinBackend::check_section_capabilities(const QString &sectionId) {
     Q_UNUSED(sectionId)
+    if (mediaProvider() == kProviderPlex) {
+        emit capabilitiesLoaded(QVariantMap{
+            {"recommended", false},
+            {"collections", false},
+            {"playlists", false},
+            {"categories", false}
+        });
+        return;
+    }
+
     emit capabilitiesLoaded(QVariantMap{
         {"recommended", false},
         {"collections", true},
@@ -739,6 +1678,11 @@ void EmbyJellyfinBackend::load_items_for_hub(const QString &hubKey) {
 }
 
 void EmbyJellyfinBackend::load_library_all(const QString &sectionId) {
+    if (mediaProvider() == kProviderPlex) {
+        plexLoadLibraryAll(sectionId);
+        return;
+    }
+
     auto *reply = apiGet(itemListUrl(sectionId, "Movie,Series,Video", true));
     connect(reply, &QNetworkReply::finished, this, [this, reply]() {
         reply->deleteLater();
@@ -751,7 +1695,78 @@ void EmbyJellyfinBackend::load_library_all(const QString &sectionId) {
     });
 }
 
+void EmbyJellyfinBackend::api_search_media(const QString &requestId,
+                                           const QString &query,
+                                           const QStringList &types,
+                                           int limit) {
+    const QString needle = query.trimmed();
+    if (needle.isEmpty()) {
+        emit apiSearchResultsReady(requestId, QVariantList{});
+        return;
+    }
+    if (get_auth_state() != QStringLiteral("authed")) {
+        emit apiSearchResultsReady(requestId, QVariantList{});
+        return;
+    }
+
+    const QStringList wanted = normalizedApiTypes(types);
+    const int maxResults = std::max(1, std::min(limit <= 0 ? 10 : limit, 50));
+
+    if (mediaProvider() == kProviderPlex) {
+        QUrl url = plexApiUrl(QStringLiteral("/search"));
+        QUrlQuery q;
+        q.addQueryItem(QStringLiteral("query"), needle);
+        url.setQuery(q);
+
+        auto *reply = plexServerGet(url);
+        connect(reply, &QNetworkReply::finished, this,
+                [this, reply, requestId, wanted, maxResults]() {
+            reply->deleteLater();
+            if (reply->error() != QNetworkReply::NoError) {
+                emit apiRequestFailed(requestId, QStringLiteral("PLEX SEARCH FAILED: ") + reply->errorString());
+                return;
+            }
+            emit apiSearchResultsReady(requestId,
+                                       apiFilterMediaResults(parsePlexItems(reply->readAll()),
+                                                             wanted, maxResults));
+        });
+        return;
+    }
+
+    QUrl url = apiUrl(QStringLiteral("/Users/") + userId() + QStringLiteral("/Items"));
+    QUrlQuery q;
+    q.addQueryItem(QStringLiteral("SearchTerm"), needle);
+    q.addQueryItem(QStringLiteral("Recursive"), QStringLiteral("true"));
+    q.addQueryItem(QStringLiteral("IncludeItemTypes"), embyIncludeTypesForApi(wanted));
+    q.addQueryItem(QStringLiteral("Limit"), QString::number(maxResults));
+    q.addQueryItem(QStringLiteral("Fields"),
+                   QStringLiteral("MediaSources,MediaStreams,Overview,Genres,ParentId,PrimaryImageAspectRatio,UserData,RecursiveItemCount,ChildCount,Album,AlbumArtist,AlbumArtists,ArtistItems,Artists"));
+    q.addQueryItem(QStringLiteral("ImageTypeLimit"), QStringLiteral("1"));
+    q.addQueryItem(QStringLiteral("EnableImages"), QStringLiteral("false"));
+    url.setQuery(q);
+
+    auto *reply = apiGet(url);
+    connect(reply, &QNetworkReply::finished, this,
+            [this, reply, requestId, wanted, maxResults]() {
+        reply->deleteLater();
+        if (reply->error() != QNetworkReply::NoError) {
+            emit apiRequestFailed(requestId, QStringLiteral("MEDIA SEARCH FAILED: ") + reply->errorString());
+            return;
+        }
+        const QVariantList items = formatItems(QJsonDocument::fromJson(reply->readAll())
+                                               .object()[QStringLiteral("Items")].toArray());
+        emit apiSearchResultsReady(requestId,
+                                   apiFilterMediaResults(items, wanted, maxResults));
+    });
+}
+
 void EmbyJellyfinBackend::load_collections(const QString &sectionId) {
+    if (mediaProvider() == kProviderPlex) {
+        Q_UNUSED(sectionId)
+        emit collectionsLoaded(QVariantList{});
+        return;
+    }
+
     Q_UNUSED(sectionId)
     auto *reply = apiGet(itemListUrl({}, "BoxSet", true));
     connect(reply, &QNetworkReply::finished, this, [this, reply]() {
@@ -774,10 +1789,21 @@ void EmbyJellyfinBackend::load_collections(const QString &sectionId) {
 }
 
 void EmbyJellyfinBackend::load_collection_items(const QString &ratingKey) {
+    if (mediaProvider() == kProviderPlex) {
+        Q_UNUSED(ratingKey)
+        emit itemsLoaded(QVariantList{});
+        return;
+    }
     load_library_all(ratingKey);
 }
 
 void EmbyJellyfinBackend::load_playlists(const QString &sectionId) {
+    if (mediaProvider() == kProviderPlex) {
+        Q_UNUSED(sectionId)
+        emit playlistsLoaded(QVariantList{});
+        return;
+    }
+
     Q_UNUSED(sectionId)
     auto *reply = apiGet(itemListUrl({}, "Playlist", true));
     connect(reply, &QNetworkReply::finished, this, [this, reply]() {
@@ -800,6 +1826,11 @@ void EmbyJellyfinBackend::load_playlists(const QString &sectionId) {
 }
 
 void EmbyJellyfinBackend::load_playlist_items(const QString &ratingKey) {
+    if (mediaProvider() == kProviderPlex) {
+        Q_UNUSED(ratingKey)
+        emit itemsLoaded(QVariantList{});
+        return;
+    }
     load_library_all(ratingKey);
 }
 
@@ -816,6 +1847,11 @@ void EmbyJellyfinBackend::load_category_items(const QString &sectionId,
 }
 
 void EmbyJellyfinBackend::load_children(const QString &ratingKey) {
+    if (mediaProvider() == kProviderPlex) {
+        plexLoadChildren(ratingKey);
+        return;
+    }
+
     auto *reply = apiGet(itemListUrl(ratingKey, {}, false));
     connect(reply, &QNetworkReply::finished, this, [this, reply]() {
         reply->deleteLater();
@@ -922,7 +1958,7 @@ QJsonObject EmbyJellyfinBackend::playbackDeviceProfile(bool forceTranscode,
     subtitleProfiles.append(QJsonObject{{"Format", "dvbsub"}, {"Method", "Encode"}});
 
     return QJsonObject{
-        {"Name", "240-MP"},
+        {"Name", "CRT Station"},
         {"MaxStreamingBitrate", limits.maxStreamingBitrate},
         {"MaxStaticBitrate", 100000000},
         {"DirectPlayProfiles", directPlayProfiles},
@@ -1177,6 +2213,11 @@ QVariantMap EmbyJellyfinBackend::buildItemDetail(const QJsonObject &item) const 
 }
 
 void EmbyJellyfinBackend::load_item_detail(const QString &ratingKey) {
+    if (mediaProvider() == kProviderPlex) {
+        plexLoadItemDetail(ratingKey);
+        return;
+    }
+
     QUrl url = apiUrl("/Users/" + userId() + "/Items/" + ratingKey);
     QUrlQuery q;
     q.addQueryItem("Fields", "MediaSources,MediaStreams,Overview,Genres,ParentId,UserData");
@@ -1199,14 +2240,240 @@ void EmbyJellyfinBackend::load_item_detail(const QString &ratingKey) {
     });
 }
 
+void EmbyJellyfinBackend::api_prepare_media_launch(const QString &requestId,
+                                                   const QString &ratingKey,
+                                                   const QString &kind) {
+    const QString cleanRatingKey = ratingKey.trimmed();
+    if (cleanRatingKey.isEmpty()) {
+        emit apiRequestFailed(requestId, QStringLiteral("MEDIA LAUNCH FAILED: EMPTY ITEM ID"));
+        return;
+    }
+
+    QString cleanKind = kind.trimmed().toLower();
+    if (cleanKind == QStringLiteral("series") || cleanKind == QStringLiteral("tv") ||
+        cleanKind == QStringLiteral("tv_show"))
+        cleanKind = QStringLiteral("show");
+
+    if (cleanKind == QStringLiteral("show")) {
+        apiPrepareShowPlayback(requestId, cleanRatingKey);
+        return;
+    }
+
+    if (mediaProvider() == kProviderPlex) {
+        auto *reply = plexServerGet(plexApiUrl(QStringLiteral("/library/metadata/%1").arg(cleanRatingKey)));
+        connect(reply, &QNetworkReply::finished, this, [this, reply, requestId]() {
+            reply->deleteLater();
+            if (reply->error() != QNetworkReply::NoError) {
+                emit apiRequestFailed(requestId, QStringLiteral("LOAD PLEX ITEM FAILED: ") + reply->errorString());
+                return;
+            }
+            apiPrepareDetailPlayback(requestId, parsePlexDetail(reply->readAll()));
+        });
+        return;
+    }
+
+    QUrl url = apiUrl(QStringLiteral("/Users/") + userId() + QStringLiteral("/Items/") + cleanRatingKey);
+    QUrlQuery q;
+    q.addQueryItem(QStringLiteral("Fields"),
+                   QStringLiteral("MediaSources,MediaStreams,Overview,Genres,ParentId,UserData"));
+    url.setQuery(q);
+
+    auto *reply = apiGet(url);
+    connect(reply, &QNetworkReply::finished, this, [this, reply, requestId]() {
+        reply->deleteLater();
+        if (reply->error() != QNetworkReply::NoError) {
+            emit apiRequestFailed(requestId, QStringLiteral("LOAD MEDIA ITEM FAILED: ") + reply->errorString());
+            return;
+        }
+        apiPrepareDetailPlayback(requestId,
+                                 buildItemDetail(QJsonDocument::fromJson(reply->readAll()).object()));
+    });
+}
+
+void EmbyJellyfinBackend::apiPrepareDetailPlayback(const QString &requestId,
+                                                   const QVariantMap &detail) {
+    const QString ratingKey = detail.value(QStringLiteral("ratingKey")).toString();
+    const QString partKey = detail.value(QStringLiteral("partKey")).toString();
+    if (ratingKey.isEmpty() || partKey.isEmpty()) {
+        emit apiRequestFailed(requestId, QStringLiteral("MEDIA LAUNCH FAILED: NO PLAYABLE STREAM"));
+        return;
+    }
+
+    const QString kind = detail.value(QStringLiteral("type")).toString();
+    QVariantMap launch;
+    launch[QStringLiteral("id")] = QStringLiteral("vod:%1:%2").arg(
+        kind,
+        QString::fromLatin1(QUrl::toPercentEncoding(ratingKey)));
+    launch[QStringLiteral("module")] = QStringLiteral("video_on_demand");
+    launch[QStringLiteral("provider")] = mediaProvider().toLower();
+    launch[QStringLiteral("kind")] = kind;
+    launch[QStringLiteral("title")] = detail.value(QStringLiteral("title")).toString();
+    launch[QStringLiteral("rating_key")] = ratingKey;
+    launch[QStringLiteral("part_key")] = partKey;
+    launch[QStringLiteral("view_offset_ms")] = detail.value(QStringLiteral("viewOffset")).toInt();
+    if (detail.contains(QStringLiteral("grandparentTitle")) &&
+        !detail.value(QStringLiteral("grandparentTitle")).toString().isEmpty())
+        launch[QStringLiteral("series")] = detail.value(QStringLiteral("grandparentTitle"));
+
+    if (mediaProvider() == kProviderPlex) {
+        emit apiLaunchStreamReady(requestId, launch, plexAbsoluteUrl(partKey), {});
+        return;
+    }
+
+    const QString sessionId = QUuid::createUuid().toString(QUuid::WithoutBraces);
+    const QString audioId = detail.value(QStringLiteral("selectedAudioId")).toString();
+    const bool forceTranscode = detail.value(QStringLiteral("forceTranscode")).toBool();
+    const QJsonObject payload = playbackInfoPayload(partKey, audioId, {}, 0, forceTranscode);
+    auto *reply = apiPostJson(apiUrl(QStringLiteral("/Items/") + ratingKey + QStringLiteral("/PlaybackInfo")),
+                              QJsonDocument(payload).toJson(QJsonDocument::Compact));
+
+    connect(reply, &QNetworkReply::finished, this,
+            [this, reply, requestId, launch, ratingKey, partKey, sessionId, audioId, forceTranscode]() {
+        reply->deleteLater();
+        const QByteArray bytes = reply->readAll();
+        if (reply->error() != QNetworkReply::NoError) {
+            QString message = QStringLiteral("PLAYBACK INFO FAILED: ") + reply->errorString();
+            const QString body = abbreviatedNetworkBody(bytes);
+            if (!body.isEmpty())
+                message += QStringLiteral(" - ") + body;
+            emit apiRequestFailed(requestId, message);
+            return;
+        }
+
+        QJsonParseError parseError;
+        const QJsonDocument doc = QJsonDocument::fromJson(bytes, &parseError);
+        if (parseError.error != QJsonParseError::NoError || !doc.isObject()) {
+            emit apiRequestFailed(requestId, QStringLiteral("PLAYBACK INFO FAILED: INVALID SERVER RESPONSE"));
+            return;
+        }
+
+        const QJsonObject info = doc.object();
+        const QString errorCode = info[QStringLiteral("ErrorCode")].toString();
+        if (!errorCode.isEmpty()) {
+            emit apiRequestFailed(requestId, QStringLiteral("PLAYBACK INFO FAILED: ") + errorCode);
+            return;
+        }
+
+        QJsonObject mediaSource;
+        const QString url = playbackUrlFromInfo(info, ratingKey, partKey, sessionId,
+                                                audioId, {}, forceTranscode, &mediaSource);
+        if (url.isEmpty()) {
+            emit apiRequestFailed(requestId, QStringLiteral("PLAYBACK INFO FAILED: NO PLAYABLE STREAM"));
+            return;
+        }
+
+        emit apiLaunchStreamReady(requestId, launch, url, httpHeaderFieldsFor(mediaSource));
+    });
+}
+
+void EmbyJellyfinBackend::apiPrepareShowPlayback(const QString &requestId,
+                                                 const QString &ratingKey) {
+    if (mediaProvider() == kProviderPlex) {
+        apiPreparePlexShowPlayback(requestId, ratingKey);
+        return;
+    }
+
+    fetchEpisodesForSeries(ratingKey, [this, requestId](QJsonArray episodes) {
+        if (episodes.isEmpty()) {
+            emit apiRequestFailed(requestId, QStringLiteral("SHOW LAUNCH FAILED: NO EPISODES"));
+            return;
+        }
+
+        QJsonObject target;
+        for (const auto &v : episodes) {
+            const QJsonObject ep = v.toObject();
+            if (ticksToMs(ep[QStringLiteral("UserData")].toObject()
+                              [QStringLiteral("PlaybackPositionTicks")]) > 0) {
+                target = ep;
+                break;
+            }
+        }
+        if (target.isEmpty()) {
+            for (const auto &v : episodes) {
+                const QJsonObject ep = v.toObject();
+                if (!ep[QStringLiteral("UserData")].toObject()
+                        [QStringLiteral("Played")].toBool()) {
+                    target = ep;
+                    break;
+                }
+            }
+        }
+        if (target.isEmpty())
+            target = episodes.first().toObject();
+
+        apiPrepareDetailPlayback(requestId, buildItemDetail(target));
+    });
+}
+
+void EmbyJellyfinBackend::apiPreparePlexShowPlayback(const QString &requestId,
+                                                     const QString &ratingKey) {
+    auto *seasonsReply = plexServerGet(plexApiUrl(QStringLiteral("/library/metadata/%1/children").arg(ratingKey)));
+    connect(seasonsReply, &QNetworkReply::finished, this,
+            [this, seasonsReply, requestId]() {
+        seasonsReply->deleteLater();
+        if (seasonsReply->error() != QNetworkReply::NoError) {
+            emit apiRequestFailed(requestId, QStringLiteral("LOAD PLEX SEASONS FAILED: ") + seasonsReply->errorString());
+            return;
+        }
+
+        const QVariantList seasons = parsePlexItems(seasonsReply->readAll());
+        if (seasons.isEmpty()) {
+            emit apiRequestFailed(requestId, QStringLiteral("SHOW LAUNCH FAILED: NO SEASONS"));
+            return;
+        }
+
+        QVariantMap targetSeason;
+        for (const QVariant &v : seasons) {
+            const QVariantMap season = v.toMap();
+            if (season.value(QStringLiteral("viewedLeafCount")).toInt() <
+                season.value(QStringLiteral("leafCount")).toInt()) {
+                targetSeason = season;
+                break;
+            }
+        }
+        if (targetSeason.isEmpty())
+            targetSeason = seasons.first().toMap();
+
+        const QString seasonKey = targetSeason.value(QStringLiteral("ratingKey")).toString();
+        auto *episodesReply = plexServerGet(plexApiUrl(QStringLiteral("/library/metadata/%1/children").arg(seasonKey)));
+        connect(episodesReply, &QNetworkReply::finished, this,
+                [this, episodesReply, requestId]() {
+            episodesReply->deleteLater();
+            if (episodesReply->error() != QNetworkReply::NoError) {
+                emit apiRequestFailed(requestId, QStringLiteral("LOAD PLEX EPISODES FAILED: ") + episodesReply->errorString());
+                return;
+            }
+
+            const QVariantMap episode = firstPlayableEpisodeFromItems(parsePlexItems(episodesReply->readAll()));
+            const QString episodeKey = episode.value(QStringLiteral("ratingKey")).toString();
+            if (episodeKey.isEmpty()) {
+                emit apiRequestFailed(requestId, QStringLiteral("SHOW LAUNCH FAILED: NO EPISODES"));
+                return;
+            }
+            api_prepare_media_launch(requestId, episodeKey, QStringLiteral("episode"));
+        });
+    });
+}
+
 void EmbyJellyfinBackend::build_stream_url(const QString &ratingKey,
                                            const QString &partKey,
                                            const QString &sessionId) {
+    if (mediaProvider() == kProviderPlex) {
+        Q_UNUSED(sessionId)
+        plexBuildStreamUrl(ratingKey, partKey);
+        return;
+    }
+
     requestPlaybackInfo(ratingKey, partKey, sessionId, {}, {}, 0, false);
 }
 
 void EmbyJellyfinBackend::build_audio_stream_url(const QString &ratingKey,
                                                  const QString &mediaSourceId) {
+    if (mediaProvider() == kProviderPlex) {
+        plexBuildAudioStreamUrl(ratingKey, mediaSourceId);
+        return;
+    }
+
     if (ratingKey.isEmpty()) {
         emit errorOccurred("AUDIO STREAM FAILED: EMPTY ITEM ID");
         return;
@@ -1229,6 +2496,15 @@ void EmbyJellyfinBackend::request_transcode(const QString &ratingKey,
                                             const QString &audioId,
                                             const QString &subtitleId,
                                             int offsetMs) {
+    if (mediaProvider() == kProviderPlex) {
+        Q_UNUSED(sessionId)
+        Q_UNUSED(audioId)
+        Q_UNUSED(subtitleId)
+        Q_UNUSED(offsetMs)
+        plexBuildStreamUrl(ratingKey, partKey);
+        return;
+    }
+
     requestPlaybackInfo(ratingKey, partKey, sessionId,
                         audioId, subtitleId, offsetMs, true);
 }
@@ -1473,6 +2749,21 @@ void EmbyJellyfinBackend::update_timeline(const QString &ratingKey,
                                           int timeMs,
                                           int durationMs) {
     Q_UNUSED(durationMs)
+    if (mediaProvider() == kProviderPlex) {
+        if (ratingKey.isEmpty() || plexToken().isEmpty()) return;
+        QUrl url = plexApiUrl("/:/timeline");
+        QUrlQuery q;
+        q.addQueryItem("ratingKey", ratingKey);
+        q.addQueryItem("key", "/library/metadata/" + ratingKey);
+        q.addQueryItem("state", state);
+        q.addQueryItem("time", QString::number(std::max(0, timeMs)));
+        q.addQueryItem("duration", QString::number(std::max(0, durationMs)));
+        url.setQuery(q);
+        auto *reply = plexServerGet(url);
+        connect(reply, &QNetworkReply::finished, reply, &QObject::deleteLater);
+        return;
+    }
+
     if (ratingKey.isEmpty() || accessToken().isEmpty()) return;
 
     QString endpoint = (state == "stopped")
@@ -1526,6 +2817,12 @@ void EmbyJellyfinBackend::fetchEpisodesForSeries(
 }
 
 void EmbyJellyfinBackend::load_on_deck_for(const QString &ratingKey) {
+    if (mediaProvider() == kProviderPlex) {
+        Q_UNUSED(ratingKey)
+        emit inProgressEpisodeLoaded(QVariantMap{});
+        return;
+    }
+
     fetchEpisodesForSeries(ratingKey, [this](QJsonArray episodes) {
         for (const auto &v : episodes) {
             QJsonObject ep = v.toObject();
@@ -1539,6 +2836,11 @@ void EmbyJellyfinBackend::load_on_deck_for(const QString &ratingKey) {
 }
 
 void EmbyJellyfinBackend::load_next_episode(const QString &currentRatingKey) {
+    if (mediaProvider() == kProviderPlex) {
+        plexLoadNextEpisode(currentRatingKey);
+        return;
+    }
+
     QUrl detailUrl = apiUrl("/Users/" + userId() + "/Items/" + currentRatingKey);
     QUrlQuery dq;
     dq.addQueryItem("Fields", "MediaSources,MediaStreams,Overview,ParentId,UserData");
@@ -1584,6 +2886,24 @@ void EmbyJellyfinBackend::getLibraries() {
         return;
     }
 
+    if (mediaProvider() == kProviderPlex) {
+        auto *reply = plexServerGet(plexApiUrl("/library/sections"));
+        connect(reply, &QNetworkReply::finished, this, [this, reply]() {
+            reply->deleteLater();
+            QVariantList opts;
+            if (reply->error() == QNetworkReply::NoError) {
+                const QVariantList libraries = parsePlexLibraries(reply->readAll(), false);
+                for (const auto &v : libraries) {
+                    const QVariantMap lib = v.toMap();
+                    opts.append(QVariantMap{{"id", lib["sectionId"].toString()},
+                                            {"label", lib["title"].toString()}});
+                }
+            }
+            emit dynamicOptionsReady("libraries", opts);
+        });
+        return;
+    }
+
     auto *reply = apiGet(apiUrl("/Users/" + userId() + "/Views"));
     connect(reply, &QNetworkReply::finished, this, [this, reply]() {
         reply->deleteLater();
@@ -1609,6 +2929,13 @@ void EmbyJellyfinBackend::getLibraries() {
 }
 
 void EmbyJellyfinBackend::getVideoQualities() {
+    if (mediaProvider() == kProviderPlex) {
+        emit dynamicOptionsReady("video_quality", QVariantList{
+            QVariantMap{{"id","auto"}, {"label","DIRECT PLAY"}},
+        });
+        return;
+    }
+
     emit dynamicOptionsReady("video_quality", QVariantList{
         QVariantMap{{"id","auto"}, {"label","AUTO"}},
         QVariantMap{{"id","1080p"}, {"label","TRANSCODE 1080P"}},

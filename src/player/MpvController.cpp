@@ -42,6 +42,25 @@ static QString writeFontconfigOverride(const QString &fontsDir) {
 }
 #endif
 
+static QProcessEnvironment mpvProcessEnvironment(const QString &appRoot)
+{
+    QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+    env.insert(QStringLiteral("APP_ROOT"), appRoot);
+
+    const QString existingPath = env.value(QStringLiteral("PATH"));
+    const QString toolPath = QStringLiteral("/usr/local/bin:/usr/bin:/bin:/usr/local/sbin:/usr/sbin:/sbin");
+    env.insert(QStringLiteral("PATH"),
+               existingPath.isEmpty() ? toolPath : toolPath + QStringLiteral(":") + existingPath);
+
+#ifdef Q_OS_LINUX
+    const QString fcConf = writeFontconfigOverride(appRoot + QStringLiteral("/assets/fonts"));
+    if (!fcConf.isEmpty())
+        env.insert(QStringLiteral("FONTCONFIG_FILE"), fcConf);
+#endif
+
+    return env;
+}
+
 MpvController::MpvController(const QString &appRoot, AppCore *appCore, QObject *parent)
     : QObject(parent)
     , m_appCore(appCore)
@@ -109,7 +128,9 @@ void MpvController::loadAndPlay(const QString &url, float startSeconds,
                                  const QString &httpHeaderFields, bool muteAudio,
                                  const QString &oscMode, bool shuffle,
                                  const QString &displayTitle,
-                                 bool audioOnly) {
+                                 bool audioOnly,
+                                 bool allowYtdl,
+                                 const QString &ytdlFormat) {
     if (m_process) {
         m_process->disconnect();
         if (m_process->state() != QProcess::NotRunning) {
@@ -160,7 +181,7 @@ void MpvController::loadAndPlay(const QString &url, float startSeconds,
     {
         QFile lf(m_logFilePath);
         if (lf.open(QFile::Append | QFile::Text)) {
-            lf.write(QString("\n=== 240-MP session start %1 ===\n    url: %2\n\n")
+            lf.write(QString("\n=== CRT Station session start %1 ===\n    url: %2\n\n")
                          .arg(QDateTime::currentDateTime().toString(Qt::ISODate))
                          .arg(url)
                          .toUtf8());
@@ -221,10 +242,16 @@ void MpvController::loadAndPlay(const QString &url, float startSeconds,
     }
     if (url.startsWith("http://", Qt::CaseInsensitive) ||
         url.startsWith("https://", Qt::CaseInsensitive)) {
-        // Authenticated media-server URLs are direct file paths/playlists.
-        // yt-dlp is not needed and can turn server-side HTTP errors into
-        // confusing noise after the real failure has already been logged.
-        args << QStringLiteral("--ytdl=no");
+        if (allowYtdl) {
+            args << QStringLiteral("--ytdl=yes");
+            if (!ytdlFormat.isEmpty())
+                args << QString("--ytdl-format=%1").arg(ytdlFormat);
+        } else {
+            // Authenticated media-server URLs are direct file paths/playlists.
+            // yt-dlp is not needed and can turn server-side HTTP errors into
+            // confusing noise after the real failure has already been logged.
+            args << QStringLiteral("--ytdl=no");
+        }
     }
 
     m_process = new QProcess(this);
@@ -246,14 +273,7 @@ void MpvController::loadAndPlay(const QString &url, float startSeconds,
         appendAudioArgs(args);
 
     if (audioOnly) {
-        QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
-        env.insert("APP_ROOT", m_appRoot);
-#ifdef Q_OS_LINUX
-        const QString fcConf = writeFontconfigOverride(m_appRoot + "/assets/fonts");
-        if (!fcConf.isEmpty())
-            env.insert("FONTCONFIG_FILE", fcConf);
-#endif
-        m_process->setProcessEnvironment(env);
+        m_process->setProcessEnvironment(mpvProcessEnvironment(m_appRoot));
         args << QString("--input-conf=%1").arg(m_inputConfPath)
              << "--no-input-terminal"
              << "--no-video"
@@ -267,14 +287,7 @@ void MpvController::loadAndPlay(const QString &url, float startSeconds,
 
     if (m_headlessMode) {
         {
-            QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
-            env.insert("APP_ROOT", m_appRoot);
-#ifdef Q_OS_LINUX
-            const QString fcConf = writeFontconfigOverride(m_appRoot + "/assets/fonts");
-            if (!fcConf.isEmpty())
-                env.insert("FONTCONFIG_FILE", fcConf);
-#endif
-            m_process->setProcessEnvironment(env);
+            m_process->setProcessEnvironment(mpvProcessEnvironment(m_appRoot));
         }
 
         if (m_previousVt > 0) {
@@ -337,14 +350,8 @@ void MpvController::loadAndPlay(const QString &url, float startSeconds,
         // stalls waiting for wl_surface frame-done callbacks from labwc.
         // --no-native-fs avoids macOS Space-transition delays that can
         // prevent early OSD renders from appearing.
-        QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
-        env.insert("APP_ROOT", m_appRoot);
+        QProcessEnvironment env = mpvProcessEnvironment(m_appRoot);
         env.remove("WAYLAND_DISPLAY");
-#ifdef Q_OS_LINUX
-        const QString fcConf = writeFontconfigOverride(m_appRoot + "/assets/fonts");
-        if (!fcConf.isEmpty())
-            env.insert("FONTCONFIG_FILE", fcConf);
-#endif
         m_process->setProcessEnvironment(env);
         args << QString("--input-conf=%1").arg(m_inputConfPath)
              << "--video-sync=audio"
@@ -405,6 +412,16 @@ void MpvController::setPaused(bool paused) {
 
 void MpvController::togglePause() {
     sendCommand({"cycle", "pause"});
+}
+
+void MpvController::setPlaybackSpeed(double speed) {
+    if (speed <= 0.0)
+        return;
+    sendCommand({"set_property", "speed", speed});
+}
+
+void MpvController::setAudioPitchCorrection(bool enabled) {
+    sendCommand({"set_property", "audio-pitch-correction", enabled});
 }
 
 bool MpvController::isRunning() const {

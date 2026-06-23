@@ -7,7 +7,7 @@ set(CMAKE_AUTOMOC ON)
 
 include(GNUInstallDirs)
 
-find_package(Qt6 REQUIRED COMPONENTS Core Gui Quick Qml Network Svg)
+find_package(Qt6 REQUIRED COMPONENTS Core Gui Quick Qml Network Svg Concurrent)
 find_package(SDL2 CONFIG REQUIRED) # gamepad input (InputManager)
 
 # libdrm is used on Linux/RPi to save and restore the KMS CRTC state
@@ -26,6 +26,8 @@ add_executable(240mp
     src/AppCore.cpp
     src/modules/local_files/LocalFilesBackend.cpp
     src/modules/emby_jellyfin/EmbyJellyfinBackend.cpp
+    src/modules/retro/RetroBackend.cpp
+    src/modules/youtube_playlist/YouTubePlaylistBackend.cpp
     src/player/MpvController.cpp
     src/input/InputManager.cpp
     src/api/ControlApiServer.cpp
@@ -39,6 +41,7 @@ target_link_libraries(240mp PRIVATE
     Qt6::Qml
     Qt6::Network
     Qt6::Svg
+    Qt6::Concurrent
     SDL2::SDL2
     $<$<NOT:$<BOOL:${APPLE}>>:${Libdrm_LIBRARIES}>
 )
@@ -58,7 +61,7 @@ target_include_directories(240mp PRIVATE
 # ── macOS bundle metadata ──────────────────────────────────────────────────────
 set_target_properties(240mp PROPERTIES
     MACOSX_BUNDLE TRUE
-    MACOSX_BUNDLE_BUNDLE_NAME "240-MP"
+    MACOSX_BUNDLE_BUNDLE_NAME "CRT Station"
     MACOSX_BUNDLE_BUNDLE_VERSION "${PROJECT_VERSION}"
     MACOSX_BUNDLE_SHORT_VERSION_STRING "${PROJECT_VERSION}"
     MACOSX_BUNDLE_GUI_IDENTIFIER "com.240mp.app"
@@ -139,10 +142,10 @@ endif()
 # Releases are Linux arm64 tarballs for Raspberry Pi. macOS builds remain a local
 # development smoke-test path and are not packaged by CPack.
 if(NOT APPLE)
-    set(CPACK_PACKAGE_NAME "240-MP")
+    set(CPACK_PACKAGE_NAME "CRT Station")
     set(CPACK_PACKAGE_VERSION "${PROJECT_VERSION}")
-    set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "240-MP Media Player")
-    set(CPACK_PACKAGE_VENDOR "240-MP")
+    set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "CRT Station Media Player")
+    set(CPACK_PACKAGE_VENDOR "CRT Station")
     set(CPACK_GENERATOR "TGZ")
     set(CPACK_PACKAGING_INSTALL_PREFIX "/usr/local")
     include(CPack)

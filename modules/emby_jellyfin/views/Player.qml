@@ -336,8 +336,8 @@ FocusScope {
         selectedSubtitleId = subId
         captureCarryLanguages()
 
-        // Persist the chosen tracks to Emby/Jellyfin so a transcode burns the right streams
-        // (mirrors Item.qml's behavior before playback).
+        // Let the backend persist chosen tracks when the provider supports
+        // server-side preferences.
         if (partId) {
             if (audioId) embyBackend.set_audio_stream(audioId, partId)
             embyBackend.set_subtitle_stream(subId, partId)

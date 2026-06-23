@@ -1,0 +1,34 @@
+{
+  "id": "com.240mp.youtube_playlist",
+  "name": "Public Access",
+  "order": 25,
+  "icon": "assets/images/logo.svg",
+  "entry_point_qml": "views/Root.qml",
+  "settings": [
+    {
+      "key": "enabled",
+      "label": "ENABLED",
+      "type": "toggle",
+      "default": "ON"
+    },
+    {
+      "key": "playlist_input",
+      "label": "PLAYLIST CODE",
+      "type": "text",
+      "default": ""
+    },
+    {
+      "key": "playback_quality",
+      "label": "QUALITY",
+      "type": "list_single",
+      "options": ["360p", "480p", "Best"],
+      "default": "360p"
+    },
+    {
+      "key": "autoplay_next",
+      "label": "AUTOPLAY NEXT",
+      "type": "toggle",
+      "default": "ON"
+    }
+  ]
+}

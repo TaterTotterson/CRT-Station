@@ -68,7 +68,7 @@ FocusScope {
     AppBar {
         iconSource: moduleRoot.moduleIcon
         title: moduleRoot.moduleName
-        subtitle: "LOCAL SERVER SIGN IN"
+        subtitle: "EMBY/JELLYFIN SIGN IN"
         anchors.top: parent.top
         anchors.left: parent.left
         anchors.topMargin: root.sh * 0.125

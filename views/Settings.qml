@@ -23,6 +23,13 @@ FocusScope {
     property string updateDetail: ""
     property var updateOptions: []
     property var sshInfo: ({})
+    property var bluetoothInfo: ({})
+    property var bluetoothDevices: []
+    property bool bluetoothScanning: false
+    property string settingsMode: "main"
+    property string activeSection: ""
+    property int mainSettingsIndex: 0
+    property var sectionSettingsIndexes: ({})
 
     function hourOptions() {
         var opts = []
@@ -37,13 +44,71 @@ FocusScope {
     }
 
     function buildModel() {
+        var restoreSection = navListState.sectionKey || ""
+        var restoreIndex = navListState.currentIndex !== undefined ? navListState.currentIndex : -1
+        navListState = ({})
+
+        if (restoreSection.length > 0) {
+            buildSectionModel(restoreSection, restoreIndex)
+            return
+        }
+
+        buildMainMenu(restoreIndex)
+    }
+
+    function refreshSettingsContext() {
         var cfg = appCore.get_settings()
         appSettings = cfg.app || {}
         installedModules = appCore.get_installed_modules()
+    }
 
+    function buildMainMenu(preferredIndex) {
+        settingsMode = "main"
+        activeSection = ""
+        refreshSettingsContext()
         var items = []
 
-        // APPLICATION section
+        items.push({ type: "settings_category", label: "Appearance", sectionKey: "appearance" })
+        items.push({ type: "settings_category", label: "Features", sectionKey: "features" })
+        items.push({ type: "settings_category", label: "Bluetooth", sectionKey: "bluetooth" })
+        items.push({ type: "settings_category", label: "System", sectionKey: "system" })
+
+        settingsItems = items
+        selectSettingsIndex(preferredIndex >= 0 ? preferredIndex : mainSettingsIndex)
+    }
+
+    function sectionTitle(sectionKey) {
+        if (sectionKey === "appearance") return "Appearance"
+        if (sectionKey === "system") return "System"
+        if (sectionKey === "features") return "Features"
+        if (sectionKey === "bluetooth") return "Bluetooth"
+        return "Settings"
+    }
+
+    function buildSectionModel(sectionKey, preferredIndex) {
+        settingsMode = "section"
+        activeSection = sectionKey
+        refreshSettingsContext()
+
+        var items = []
+        items.push({ type: "section", label: sectionTitle(sectionKey) + ":" })
+
+        if (sectionKey === "appearance") {
+            buildAppearanceItems(items)
+        } else if (sectionKey === "system") {
+            buildSystemItems(items)
+        } else if (sectionKey === "features") {
+            buildFeatureItems(items)
+        } else if (sectionKey === "bluetooth") {
+            buildBluetoothItems(items)
+        }
+
+        settingsItems = items
+        var savedIndex = sectionSettingsIndexes[sectionKey]
+        selectSettingsIndex(preferredIndex >= 0 ? preferredIndex : (savedIndex === undefined ? 0 : savedIndex))
+    }
+
+    function buildAppearanceItems(items) {
         var colorOpts = ["Off Air","Video 1","Late Night","Synthwave","Terminal","T-120","Amber","Kinescope"]
         var custom = appCore.getCustomColorScheme()
         if (Object.keys(custom).length === 5) colorOpts.push("Custom")
@@ -65,6 +130,9 @@ FocusScope {
                 moduleId: ""
             })
         }
+    }
+
+    function buildSystemItems(items) {
         items.push({
             type: "list_single",
             key: "sleep_timer_mode",
@@ -75,7 +143,6 @@ FocusScope {
         })
 
         var clockParts = root.vcrClockParts()
-        items.push({ type: "section", label: "Clock:" })
         items.push({
             type: "clock_part",
             part: "hour",
@@ -98,25 +165,7 @@ FocusScope {
             value: clockParts.period
         })
 
-        // MODULES section — only show modules with has_settings
-        var hasModuleSettings = false
-        for (var i = 0; i < installedModules.length; i++) {
-            if (installedModules[i].has_settings) { hasModuleSettings = true; break }
-        }
-
-        if (hasModuleSettings) {
-            items.push({ type: "section", label: "Modules:" })
-            for (var j = 0; j < installedModules.length; j++) {
-                var m = installedModules[j]
-                if (m.has_settings) {
-                    items.push({ type: "submenu", label: m.name, moduleId: m.id })
-                }
-            }
-        }
-
-        // SYSTEM section
         var ssh = settingsRoot.refreshSshInfo()
-        items.push({ type: "section", label: "System:" })
         items.push({
             type: "ssh_toggle",
             label: "SSH Access",
@@ -125,21 +174,49 @@ FocusScope {
             enabled: !!ssh.enabled
         })
         items.push({ type: "action", action: "check_updates", label: "Check For Updates", value: root.appVersion })
+    }
 
-        settingsItems = items
+    function buildFeatureItems(items) {
+        // MODULES section — only show modules with has_settings
+        var hasModuleSettings = false
+        for (var i = 0; i < installedModules.length; i++) {
+            if (installedModules[i].has_settings) { hasModuleSettings = true; break }
+        }
 
-        // Restore saved position, or default to first selectable row
-        if (navListState.currentIndex !== undefined) {
-            settingsList.currentIndex = Math.min(navListState.currentIndex, items.length - 1)
-        } else {
-            for (var k = 0; k < items.length; k++) {
-                if (items[k].type !== "section") {
-                    settingsList.currentIndex = k
-                    break
+        if (hasModuleSettings) {
+            for (var j = 0; j < installedModules.length; j++) {
+                var m = installedModules[j]
+                if (m.has_settings) {
+                    items.push({ type: "submenu", label: m.name, moduleId: m.id })
                 }
             }
+        } else {
+            items.push({ type: "status", label: "No Feature Settings", value: "" })
         }
-        settingsList.positionViewAtIndex(settingsList.currentIndex, ListView.Contain)
+    }
+
+    function buildBluetoothItems(items) {
+        var bt = settingsRoot.refreshBluetoothInfo()
+        items.push({
+            type: "bluetooth_toggle",
+            label: "Bluetooth",
+            value: settingsRoot.bluetoothRowValue(bt),
+            available: !!bt.available,
+            enabled: !!bt.enabled,
+            powered: !!bt.powered
+        })
+        items.push({
+            type: "action",
+            action: "scan_bluetooth",
+            label: "Scan Controllers",
+            value: bluetoothScanning ? "..." : (bt.available ? "OK" : "N/A")
+        })
+        items.push({
+            type: "action",
+            action: "map_controller",
+            label: "Map Controller",
+            value: inputManager.gamepadConnected ? "READY" : "NO PAD"
+        })
     }
 
     function sshRowValue(info) {
@@ -152,12 +229,126 @@ FocusScope {
         return sshInfo
     }
 
+    function bluetoothRowValue(info) {
+        if (!info || !info.available) return "N/A"
+        if (info.active && info.powered) return "On"
+        return info.enabled ? "On" : "Off"
+    }
+
+    function refreshBluetoothInfo() {
+        bluetoothInfo = appCore.getBluetoothInfo()
+        return bluetoothInfo
+    }
+
+    function bluetoothDeviceName(device) {
+        var name = (device && device.name) ? device.name : ((device && device.address) ? device.address : "Controller")
+        name = ("" + name).trim()
+        if (name.length > 18)
+            return name.slice(0, 15) + "..."
+        return name
+    }
+
+    function isSelectableRow(row) {
+        return row && row.type !== "section" && row.type !== "status"
+    }
+
+    function selectSettingsIndex(preferredIndex) {
+        var idx = preferredIndex
+        if (idx >= 0 && idx < settingsItems.length && isSelectableRow(settingsItems[idx])) {
+            settingsList.currentIndex = idx
+        } else {
+            settingsList.currentIndex = settingsItems.length > 0 ? 0 : -1
+            for (var i = 0; i < settingsItems.length; i++) {
+                if (isSelectableRow(settingsItems[i])) {
+                    settingsList.currentIndex = i
+                    break
+                }
+            }
+        }
+        if (settingsList.currentIndex >= 0)
+            settingsList.positionViewAtIndex(settingsList.currentIndex, ListView.Contain)
+    }
+
+    function rememberSettingsIndex(rowIndex) {
+        if (settingsMode === "main") {
+            mainSettingsIndex = rowIndex
+        } else if (settingsMode === "section" && activeSection.length > 0) {
+            var saved = Object.assign({}, sectionSettingsIndexes)
+            saved[activeSection] = rowIndex
+            sectionSettingsIndexes = saved
+        }
+    }
+
+    function openSettingsSection(sectionKey, rowIndex) {
+        mainSettingsIndex = rowIndex
+        var savedIndex = sectionSettingsIndexes[sectionKey]
+        buildSectionModel(sectionKey, savedIndex === undefined ? 0 : savedIndex)
+    }
+
+    function returnToSectionSettings() {
+        if (activeSection.length > 0)
+            buildSectionModel(activeSection, sectionSettingsIndexes[activeSection] || 0)
+        else
+            buildMainMenu(mainSettingsIndex)
+        settingsList.forceActiveFocus()
+    }
+
     function replaceSettingsRow(rowIndex, values) {
         var updated = settingsItems.slice()
         updated[rowIndex] = Object.assign({}, updated[rowIndex], values)
         var savedIndex = settingsList.currentIndex
         settingsItems = updated
         settingsList.currentIndex = savedIndex
+    }
+
+    function buildBluetoothScanModel(message, preferredIndex) {
+        settingsMode = "bluetooth_scan"
+        activeSection = "bluetooth"
+        var items = []
+        items.push({ type: "section", label: "Bluetooth Scan:" })
+
+        if (bluetoothScanning) {
+            items.push({ type: "status", label: "Scanning Controllers", value: "..." })
+        } else {
+            if (message && message.length > 0)
+                items.push({ type: "status", label: message, value: "" })
+
+            for (var b = 0; b < bluetoothDevices.length; b++) {
+                var device = bluetoothDevices[b]
+                items.push({
+                    type: "bluetooth_device",
+                    label: settingsRoot.bluetoothDeviceName(device),
+                    value: device.status || "PAIR",
+                    address: device.address || "",
+                    connected: !!device.connected,
+                    paired: !!device.paired,
+                    trusted: !!device.trusted
+                })
+                if (device.paired || device.trusted || device.connected) {
+                    items.push({
+                        type: "bluetooth_forget",
+                        label: "Forget " + settingsRoot.bluetoothDeviceName(device),
+                        value: "",
+                        address: device.address || ""
+                    })
+                }
+            }
+
+            items.push({
+                type: "action",
+                action: "scan_bluetooth",
+                label: bluetoothDevices.length > 0 ? "Scan Again" : "Scan Controllers",
+                value: "OK"
+            })
+        }
+
+        settingsItems = items
+        selectSettingsIndex(preferredIndex === undefined ? 0 : preferredIndex)
+    }
+
+    function returnToMainSettings() {
+        buildMainMenu(mainSettingsIndex)
+        settingsList.forceActiveFocus()
     }
 
     function setSshEnabled(rowIndex, enabled) {
@@ -172,6 +363,72 @@ FocusScope {
             available: !!result.available,
             enabled: !!result.enabled
         })
+    }
+
+    function setBluetoothEnabled(rowIndex, enabled) {
+        var row = settingsItems[rowIndex]
+        if (!row || !row.available) return
+
+        replaceSettingsRow(rowIndex, { value: "..." })
+        var result = appCore.setBluetoothEnabled(enabled)
+        bluetoothInfo = result
+        replaceSettingsRow(rowIndex, {
+            value: settingsRoot.bluetoothRowValue(result),
+            available: !!result.available,
+            enabled: !!result.enabled,
+            powered: !!result.powered
+        })
+    }
+
+    function scanBluetooth(rowIndex) {
+        if (bluetoothScanning) return
+
+        rememberSettingsIndex(rowIndex)
+        settingsMode = "bluetooth_scan"
+        activeSection = "bluetooth"
+        bluetoothScanning = true
+        bluetoothDevices = []
+        buildBluetoothScanModel("", 0)
+        appCore.scanBluetoothDevicesAsync()
+    }
+
+    function finishBluetoothScan(result) {
+        bluetoothScanning = false
+        bluetoothInfo = result
+        bluetoothDevices = result.devices || []
+        if (settingsMode === "bluetooth_scan") {
+            buildBluetoothScanModel(result.message || "NO CONTROLLERS FOUND.", 1)
+        } else {
+            buildModel()
+        }
+    }
+
+    function pairBluetooth(rowIndex, row) {
+        if (!row || !row.address) return
+
+        replaceSettingsRow(rowIndex, { value: "..." })
+        var result = appCore.pairBluetoothDevice(row.address)
+        bluetoothInfo = result
+        bluetoothDevices = result.devices || bluetoothDevices
+        if (settingsMode === "bluetooth_scan")
+            buildBluetoothScanModel(result.message || "CONTROLLER READY.", rowIndex)
+        else
+            buildModel()
+        selectSettingsIndex(rowIndex)
+    }
+
+    function forgetBluetooth(rowIndex, row) {
+        if (!row || !row.address) return
+
+        replaceSettingsRow(rowIndex, { value: "..." })
+        var result = appCore.forgetBluetoothDevice(row.address)
+        bluetoothInfo = result
+        bluetoothDevices = result.devices || []
+        if (settingsMode === "bluetooth_scan")
+            buildBluetoothScanModel(result.message || "CONTROLLER FORGOTTEN.", rowIndex)
+        else
+            buildModel()
+        selectSettingsIndex(rowIndex)
     }
 
     function setListSingleValue(rowIndex, row, newVal) {
@@ -191,8 +448,8 @@ FocusScope {
             appCore.save_setting(row.moduleId, row.key, newVal)
 
         if (row.moduleId === "" && row.key === "color_scheme") {
-            buildModel()
-            settingsList.currentIndex = 0
+            buildSectionModel("appearance", rowIndex)
+            selectSettingsIndex(rowIndex)
         }
     }
 
@@ -202,21 +459,21 @@ FocusScope {
         var minute = row.part === "minute" ? parseInt(newVal) : parts.minute
         var period = row.part === "period" ? newVal : parts.period
         root.setVcrClock(hour, minute, period)
-        buildModel()
+        buildSectionModel("system", rowIndex)
         settingsList.currentIndex = rowIndex
         settingsList.positionViewAtIndex(settingsList.currentIndex, ListView.Contain)
     }
 
     function firstSelectableAfter(idx) {
         for (var i = idx + 1; i < settingsItems.length; i++) {
-            if (settingsItems[i].type !== "section") return i
+            if (isSelectableRow(settingsItems[i])) return i
         }
         return settingsList.currentIndex
     }
 
     function firstSelectableBefore(idx) {
         for (var i = idx - 1; i >= 0; i--) {
-            if (settingsItems[i].type !== "section") return i
+            if (isSelectableRow(settingsItems[i])) return i
         }
         return settingsList.currentIndex
     }
@@ -257,7 +514,7 @@ FocusScope {
     function handleUpdateInstallResult(result) {
         if ((result.status || "") === "started") {
             updateBusy = true
-            updateMessage = result.message || "INSTALLING UPDATE. 240-MP WILL RESTART."
+            updateMessage = result.message || "INSTALLING UPDATE. CRT STATION WILL RESTART."
             updateDetail = "LEAVE POWER CONNECTED"
             updateOptions = []
         } else {
@@ -286,13 +543,18 @@ FocusScope {
         function onUpdateInstallFinished(result) {
             settingsRoot.handleUpdateInstallResult(result)
         }
+        function onBluetoothScanFinished(result) {
+            settingsRoot.finishBluetoothScan(result)
+        }
     }
 
     // Header
     AppBar {
         iconSource: "../../assets/images/settings.svg"
         title: "Settings"
-        subtitle: root.appVersion
+        subtitle: settingsMode === "bluetooth_scan"
+            ? "Bluetooth Scan"
+            : (settingsMode === "section" ? sectionTitle(activeSection) : root.appVersion)
         anchors.top: parent.top
         anchors.left: parent.left
         anchors.topMargin: root.sh * 0.125 //60
@@ -329,6 +591,8 @@ FocusScope {
                 settingsRoot.setListSingleValue(currentIndex, row, opts[newIdx])
             } else if (row && row.type === "ssh_toggle") {
                 settingsRoot.setSshEnabled(currentIndex, false)
+            } else if (row && row.type === "bluetooth_toggle") {
+                settingsRoot.setBluetoothEnabled(currentIndex, false)
             }
         }
 
@@ -341,23 +605,50 @@ FocusScope {
                 settingsRoot.setListSingleValue(currentIndex, row, opts[newIdx])
             } else if (row && row.type === "ssh_toggle") {
                 settingsRoot.setSshEnabled(currentIndex, true)
+            } else if (row && row.type === "bluetooth_toggle") {
+                settingsRoot.setBluetoothEnabled(currentIndex, true)
             }
         }
 
         Keys.onReturnPressed: {
             var row = settingsItems[currentIndex]
-            if (row && row.type === "submenu") {
-                settingsRoot.navigateTo("views/ModuleSettings.qml", { moduleId: row.moduleId }, { currentIndex: settingsList.currentIndex })
+            if (row && row.type === "settings_category") {
+                settingsRoot.openSettingsSection(row.sectionKey, currentIndex)
+            } else if (row && row.type === "submenu") {
+                settingsRoot.rememberSettingsIndex(currentIndex)
+                settingsRoot.navigateTo("views/ModuleSettings.qml", { moduleId: row.moduleId }, {
+                    currentIndex: settingsList.currentIndex,
+                    sectionKey: activeSection
+                })
             } else if (row && row.type === "action" && row.action === "check_updates") {
                 settingsRoot.beginUpdateCheck()
+            } else if (row && row.type === "action" && row.action === "scan_bluetooth") {
+                settingsRoot.scanBluetooth(currentIndex)
+            } else if (row && row.type === "action" && row.action === "map_controller") {
+                settingsRoot.rememberSettingsIndex(currentIndex)
+                settingsRoot.navigateTo("views/ControllerMapper.qml", {}, {
+                    currentIndex: settingsList.currentIndex,
+                    sectionKey: activeSection
+                })
             } else if (row && row.type === "ssh_toggle") {
                 settingsRoot.setSshEnabled(currentIndex, !row.enabled)
+            } else if (row && row.type === "bluetooth_toggle") {
+                settingsRoot.setBluetoothEnabled(currentIndex, !(row.enabled && row.powered))
+            } else if (row && row.type === "bluetooth_device") {
+                settingsRoot.pairBluetooth(currentIndex, row)
+            } else if (row && row.type === "bluetooth_forget") {
+                settingsRoot.forgetBluetooth(currentIndex, row)
             }
         }
 
         Keys.onPressed: function(event) {
             if (event.key === Qt.Key_Escape || event.key === Qt.Key_Backspace || event.key === Qt.Key_Back) {
-                settingsRoot.goBack()
+                if (settingsMode === "bluetooth_scan")
+                    settingsRoot.returnToSectionSettings()
+                else if (settingsMode === "section")
+                    settingsRoot.returnToMainSettings()
+                else
+                    settingsRoot.goBack()
                 event.accepted = true
             }
         }
@@ -394,6 +685,8 @@ FocusScope {
                     font.capitalization: Font.AllUppercase
                     anchors.verticalCenter: parent.verticalCenter
                     x: 0
+                    width: parent.width * 0.62
+                    elide: Text.ElideRight
                     topPadding: root.sh * 0.0041667 //2
                     leftPadding: root.sw * 0.009375 //6
                     rightPadding: root.sw * 0.009375 //6
@@ -409,7 +702,7 @@ FocusScope {
                     spacing: root.sw * 0.00625 //4
 
                     Text {
-                        visible: modelData.type === "list_single" || modelData.type === "clock_part" || (modelData.type === "ssh_toggle" && modelData.available === true)
+                        visible: modelData.type === "list_single" || modelData.type === "clock_part" || (modelData.type === "ssh_toggle" && modelData.available === true) || (modelData.type === "bluetooth_toggle" && modelData.available === true)
                         text: "\u25C4"
                         color: settingsList.currentIndex === index ? root.surfaceColor : root.tertiaryColor
                         font.family: root.globalFont
@@ -432,7 +725,7 @@ FocusScope {
                         font.pixelSize:root.sh * 0.05 //24
                     }
                     Text {
-                        visible: modelData.type === "submenu" || modelData.type === "list_single" || modelData.type === "clock_part" || modelData.type === "action" || (modelData.type === "ssh_toggle" && modelData.available === true)
+                        visible: modelData.type === "settings_category" || modelData.type === "submenu" || modelData.type === "list_single" || modelData.type === "clock_part" || modelData.type === "action" || modelData.type === "bluetooth_device" || modelData.type === "bluetooth_forget" || (modelData.type === "ssh_toggle" && modelData.available === true) || (modelData.type === "bluetooth_toggle" && modelData.available === true)
                         text: "\u25BA"
                         color: settingsList.currentIndex === index ? root.surfaceColor : root.tertiaryColor
                         font.family: root.globalFont
