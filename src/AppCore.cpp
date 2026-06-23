@@ -24,6 +24,7 @@ constexpr const char *kDefaultUpdateManifestUrl =
 constexpr const char *kPiUpdateHelper = "/usr/local/sbin/240mp-update";
 constexpr const char *kSshControlHelper = "/usr/local/sbin/240mp-ssh-control";
 constexpr const char *kBluetoothControlHelper = "/usr/local/sbin/240mp-bluetooth-control";
+constexpr const char *kArgonFanControlHelper = "/usr/local/sbin/240mp-argon-fan-control";
 
 int compareVersions(const QString &left, const QString &right)
 {
@@ -278,6 +279,154 @@ QVariantMap runBluetoothControl(const QStringList &helperArgs, int timeoutMs = 1
     result["message"] = ok ? bluetoothControlMessage(result, action)
                            : (errorOutput.isEmpty()
                                   ? QStringLiteral("BLUETOOTH CONTROL HELPER FAILED.")
+                                  : errorOutput.toUpper());
+    return result;
+#endif
+}
+
+int boundedFanSpeed(int speed)
+{
+    return std::clamp(speed, 0, 100);
+}
+
+QVariantMap parseArgonFanControlOutput(const QString &output)
+{
+    QVariantMap result{
+        {"available", false},
+        {"active", false},
+        {"mode", "auto"},
+        {"speed", 0},
+        {"fan", 0},
+        {"temp", QVariant{}}
+    };
+
+    const QStringList lines = output.split('\n', Qt::SkipEmptyParts);
+    for (const QString &line : lines) {
+        const int eq = line.indexOf('=');
+        if (eq <= 0)
+            continue;
+
+        const QString key = line.left(eq).trimmed();
+        const QString value = line.mid(eq + 1).trimmed();
+        if (key == "available" || key == "active") {
+            result[key] = truthyValue(value);
+        } else if (key == "mode") {
+            result[key] = value;
+        } else if (key == "speed" || key == "fan") {
+            result[key] = boundedFanSpeed(value.toInt());
+        } else if (key == "temp") {
+            bool ok = false;
+            const double temp = value.toDouble(&ok);
+            if (ok)
+                result[key] = temp;
+        } else if (key == "message") {
+            result[key] = value;
+        }
+    }
+
+    return result;
+}
+
+QString argonFanDisplayValue(const QVariantMap &info)
+{
+    if (!info.value("available").toBool())
+        return QStringLiteral("N/A");
+
+    const QString mode = info.value("mode", QStringLiteral("auto")).toString().toLower();
+    if (mode == QStringLiteral("off"))
+        return QStringLiteral("OFF");
+    if (mode == QStringLiteral("fixed"))
+        return QStringLiteral("%1%").arg(boundedFanSpeed(info.value("speed").toInt()));
+    return QStringLiteral("AUTO");
+}
+
+QString normalizeArgonFanMode(const QString &raw)
+{
+    QString mode = raw.trimmed().toLower();
+    mode.remove(QChar('%'));
+    if (mode == QStringLiteral("automatic"))
+        mode = QStringLiteral("auto");
+    if (mode == QStringLiteral("0"))
+        mode = QStringLiteral("off");
+    if (mode == QStringLiteral("auto") || mode == QStringLiteral("off"))
+        return mode;
+
+    bool ok = false;
+    const int speed = mode.toInt(&ok);
+    if (ok)
+        return QString::number(boundedFanSpeed(speed));
+
+    return QStringLiteral("auto");
+}
+
+QString argonFanControlMessage(const QVariantMap &info)
+{
+    if (!info.value("available").toBool())
+        return info.value("message", QStringLiteral("ARGON FAN CONTROL IS NOT AVAILABLE.")).toString();
+
+    const QString display = argonFanDisplayValue(info);
+    const double temp = info.value("temp").toDouble();
+    if (info.contains("temp") && temp > 0.0)
+        return QStringLiteral("ARGON FAN %1. CPU %2 C.").arg(display).arg(temp, 0, 'f', 1);
+    return QStringLiteral("ARGON FAN %1.").arg(display);
+}
+
+QVariantMap runArgonFanControl(const QStringList &helperArgs)
+{
+    QVariantMap result{
+        {"ok", false},
+        {"available", false},
+        {"active", false},
+        {"mode", "auto"},
+        {"speed", 0},
+        {"fan", 0},
+        {"display", "N/A"},
+        {"message", "ARGON FAN CONTROL IS NOT AVAILABLE ON THIS SYSTEM."}
+    };
+
+#ifndef Q_OS_LINUX
+    Q_UNUSED(helperArgs);
+    return result;
+#else
+    const QFileInfo helperInfo(QString::fromUtf8(kArgonFanControlHelper));
+    if (!helperInfo.exists() || !helperInfo.isExecutable())
+        return result;
+
+    const QFileInfo sudoInfo("/usr/bin/sudo");
+    const QString sudoPath = sudoInfo.exists() ? QStringLiteral("/usr/bin/sudo")
+                                               : QStringLiteral("sudo");
+    QStringList args{
+        QStringLiteral("-n"),
+        QString::fromUtf8(kArgonFanControlHelper)
+    };
+    args.append(helperArgs);
+
+    QProcess process;
+    process.start(sudoPath, args);
+    if (!process.waitForStarted(1000)) {
+        result["message"] = "COULD NOT START ARGON FAN HELPER.";
+        return result;
+    }
+
+    if (!process.waitForFinished(10000)) {
+        process.kill();
+        process.waitForFinished(1000);
+        result["message"] = "ARGON FAN HELPER TIMED OUT.";
+        return result;
+    }
+
+    const QString output = QString::fromUtf8(process.readAllStandardOutput());
+    const QString errorOutput = QString::fromUtf8(process.readAllStandardError()).trimmed();
+    const QVariantMap parsedStatus = parseArgonFanControlOutput(output);
+    for (auto it = parsedStatus.constBegin(); it != parsedStatus.constEnd(); ++it)
+        result.insert(it.key(), it.value());
+
+    const bool ok = process.exitStatus() == QProcess::NormalExit && process.exitCode() == 0;
+    result["ok"] = ok;
+    result["display"] = argonFanDisplayValue(result);
+    result["message"] = ok ? argonFanControlMessage(result)
+                           : (errorOutput.isEmpty()
+                                  ? QStringLiteral("ARGON FAN HELPER FAILED.")
                                   : errorOutput.toUpper());
     return result;
 #endif
@@ -722,6 +871,14 @@ QVariantMap AppCore::connectBluetoothDevice(const QString &address) {
 
 QVariantMap AppCore::forgetBluetoothDevice(const QString &address) {
     return runBluetoothControl({QStringLiteral("forget"), address.trimmed()}, 15000);
+}
+
+QVariantMap AppCore::getArgonFanInfo() const {
+    return runArgonFanControl({QStringLiteral("status")});
+}
+
+QVariantMap AppCore::setArgonFanMode(const QString &mode) {
+    return runArgonFanControl({QStringLiteral("set"), normalizeArgonFanMode(mode)});
 }
 
 QVariant AppCore::get_installed_modules() {

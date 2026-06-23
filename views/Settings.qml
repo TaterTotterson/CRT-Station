@@ -25,6 +25,7 @@ FocusScope {
     property var sshInfo: ({})
     property var bluetoothInfo: ({})
     property var bluetoothDevices: []
+    property var argonFanInfo: ({})
     property bool bluetoothScanning: false
     property string settingsMode: "main"
     property string activeSection: ""
@@ -173,6 +174,15 @@ FocusScope {
             available: !!ssh.available,
             enabled: !!ssh.enabled
         })
+
+        var fan = settingsRoot.refreshArgonFanInfo()
+        items.push({
+            type: "argon_fan",
+            label: "Argon Fan",
+            value: settingsRoot.argonFanRowValue(fan),
+            available: !!fan.available,
+            options: ["AUTO","OFF","25%","50%","75%","100%"]
+        })
         items.push({ type: "action", action: "check_updates", label: "Check For Updates", value: root.appVersion })
     }
 
@@ -227,6 +237,16 @@ FocusScope {
     function refreshSshInfo() {
         sshInfo = appCore.getSshInfo()
         return sshInfo
+    }
+
+    function argonFanRowValue(info) {
+        if (!info || !info.available) return "N/A"
+        return info.display || "Auto"
+    }
+
+    function refreshArgonFanInfo() {
+        argonFanInfo = appCore.getArgonFanInfo()
+        return argonFanInfo
     }
 
     function bluetoothRowValue(info) {
@@ -380,6 +400,19 @@ FocusScope {
         })
     }
 
+    function setArgonFanMode(rowIndex, mode) {
+        var row = settingsItems[rowIndex]
+        if (!row || !row.available) return
+
+        replaceSettingsRow(rowIndex, { value: "..." })
+        var result = appCore.setArgonFanMode(mode)
+        argonFanInfo = result
+        replaceSettingsRow(rowIndex, {
+            value: settingsRoot.argonFanRowValue(result),
+            available: !!result.available
+        })
+    }
+
     function scanBluetooth(rowIndex) {
         if (bluetoothScanning) return
 
@@ -434,6 +467,11 @@ FocusScope {
     function setListSingleValue(rowIndex, row, newVal) {
         if (row.type === "clock_part") {
             setClockPartValue(rowIndex, row, newVal)
+            return
+        }
+
+        if (row.type === "argon_fan") {
+            setArgonFanMode(rowIndex, newVal)
             return
         }
 
@@ -584,7 +622,7 @@ FocusScope {
 
         Keys.onLeftPressed: {
             var row = settingsItems[currentIndex]
-            if (row && (row.type === "list_single" || row.type === "clock_part")) {
+            if (row && (row.type === "list_single" || row.type === "clock_part" || row.type === "argon_fan")) {
                 var opts = row.options
                 var idx = opts.indexOf(row.value)
                 var newIdx = (idx - 1 + opts.length) % opts.length
@@ -598,7 +636,7 @@ FocusScope {
 
         Keys.onRightPressed: {
             var row = settingsItems[currentIndex]
-            if (row && (row.type === "list_single" || row.type === "clock_part")) {
+            if (row && (row.type === "list_single" || row.type === "clock_part" || row.type === "argon_fan")) {
                 var opts = row.options
                 var idx = opts.indexOf(row.value)
                 var newIdx = (idx + 1) % opts.length
@@ -634,6 +672,10 @@ FocusScope {
                 settingsRoot.setSshEnabled(currentIndex, !row.enabled)
             } else if (row && row.type === "bluetooth_toggle") {
                 settingsRoot.setBluetoothEnabled(currentIndex, !(row.enabled && row.powered))
+            } else if (row && row.type === "argon_fan") {
+                var fanOpts = row.options
+                var fanIdx = fanOpts.indexOf(row.value)
+                settingsRoot.setListSingleValue(currentIndex, row, fanOpts[(fanIdx + 1) % fanOpts.length])
             } else if (row && row.type === "bluetooth_device") {
                 settingsRoot.pairBluetooth(currentIndex, row)
             } else if (row && row.type === "bluetooth_forget") {
@@ -702,7 +744,7 @@ FocusScope {
                     spacing: root.sw * 0.00625 //4
 
                     Text {
-                        visible: modelData.type === "list_single" || modelData.type === "clock_part" || (modelData.type === "ssh_toggle" && modelData.available === true) || (modelData.type === "bluetooth_toggle" && modelData.available === true)
+                        visible: modelData.type === "list_single" || modelData.type === "clock_part" || (modelData.type === "argon_fan" && modelData.available === true) || (modelData.type === "ssh_toggle" && modelData.available === true) || (modelData.type === "bluetooth_toggle" && modelData.available === true)
                         text: "\u25C4"
                         color: settingsList.currentIndex === index ? root.surfaceColor : root.tertiaryColor
                         font.family: root.globalFont
@@ -712,7 +754,7 @@ FocusScope {
                         font.pixelSize: root.sh * 0.0375 //18
                     }
                     Text {
-                        visible: modelData.type === "list_single" || modelData.type === "clock_part" || modelData.value !== undefined
+                        visible: modelData.type === "list_single" || modelData.type === "clock_part" || modelData.type === "argon_fan" || modelData.value !== undefined
                         text: modelData.value || ""
                         color: settingsList.currentIndex === index ? root.surfaceColor : root.primaryColor
                         font.family: root.globalFont
@@ -725,7 +767,7 @@ FocusScope {
                         font.pixelSize:root.sh * 0.05 //24
                     }
                     Text {
-                        visible: modelData.type === "settings_category" || modelData.type === "submenu" || modelData.type === "list_single" || modelData.type === "clock_part" || modelData.type === "action" || modelData.type === "bluetooth_device" || modelData.type === "bluetooth_forget" || (modelData.type === "ssh_toggle" && modelData.available === true) || (modelData.type === "bluetooth_toggle" && modelData.available === true)
+                        visible: modelData.type === "settings_category" || modelData.type === "submenu" || modelData.type === "list_single" || modelData.type === "clock_part" || (modelData.type === "argon_fan" && modelData.available === true) || modelData.type === "action" || modelData.type === "bluetooth_device" || modelData.type === "bluetooth_forget" || (modelData.type === "ssh_toggle" && modelData.available === true) || (modelData.type === "bluetooth_toggle" && modelData.available === true)
                         text: "\u25BA"
                         color: settingsList.currentIndex === index ? root.surfaceColor : root.tertiaryColor
                         font.family: root.globalFont

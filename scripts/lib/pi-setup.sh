@@ -15,6 +15,8 @@ PI240_RUNTIME_PACKAGES=(
     qml6-module-qtquick-window
     qml6-module-qtquick-effects
     libsdl2-2.0-0
+    python3-smbus
+    i2c-tools
     bluez
     bluetooth
     rfkill
@@ -470,6 +472,35 @@ pi240_enable_ir_overlay() {
     fi
 }
 
+pi240_enable_i2c() {
+    local config_txt
+    config_txt="$(pi240_boot_config_path)"
+
+    pi240_root install -d -m 0755 "$(dirname "$config_txt")"
+    pi240_root touch "$config_txt"
+
+    if pi240_root grep -Eq '^[[:space:]]*#?[[:space:]]*dtparam=i2c_arm=' "$config_txt"; then
+        if pi240_is_root; then
+            sed -i -E 's|^[[:space:]]*#?[[:space:]]*dtparam=i2c_arm=.*$|dtparam=i2c_arm=on|' "$config_txt"
+        else
+            sudo sed -i -E 's|^[[:space:]]*#?[[:space:]]*dtparam=i2c_arm=.*$|dtparam=i2c_arm=on|' "$config_txt"
+        fi
+        return 0
+    fi
+
+    if pi240_is_root; then
+        {
+            printf '\n# --- CRT Station Argon ONE fan control ---\n'
+            printf 'dtparam=i2c_arm=on\n'
+        } >> "$config_txt"
+    else
+        {
+            printf '\n# --- CRT Station Argon ONE fan control ---\n'
+            printf 'dtparam=i2c_arm=on\n'
+        } | sudo tee -a "$config_txt" >/dev/null
+    fi
+}
+
 pi240_install_boot_splash() {
     pi240_add_boot_cmdline_args
 
@@ -716,6 +747,7 @@ SUDOERS
     # during OTA, but they do not know about newer system helpers yet.
     pi240_install_bluetooth_control "$service_user" /usr/local/sbin/240mp-bluetooth-control
     pi240_install_retro_mount_helper "$service_user" /usr/local/sbin/240mp-retro-mount
+    pi240_install_argon_fan_control "$service_user" /usr/local/sbin/240mp-argon-fan-control
 }
 
 pi240_install_ssh_control() {
@@ -1116,6 +1148,336 @@ SUDOERS
             pi240_root "$helper" disable || true
             ;;
     esac
+}
+
+pi240_install_argon_fan_control() {
+    local service_user="${1:-mp240}"
+    local helper="${2:-/usr/local/sbin/240mp-argon-fan-control}"
+    local daemon="/usr/local/sbin/240mp-argon-fan-daemon"
+    local config="/etc/240mp-argon-fan.conf"
+    local service="/etc/systemd/system/240mp-argon-fan.service"
+
+    pi240_enable_i2c
+
+    pi240_install_file_from_stdin "$daemon" 0755 <<'PY'
+#!/usr/bin/env python3
+import os
+import signal
+import sys
+import time
+
+CONFIG = "/etc/240mp-argon-fan.conf"
+ADDR = 0x1A
+REG_DUTY = 0x80
+DEFAULT_CURVE = [(65.0, 100), (60.0, 55), (55.0, 30)]
+
+try:
+    import smbus
+except Exception:
+    smbus = None
+
+reload_requested = False
+
+def handle_reload(signum, frame):
+    global reload_requested
+    reload_requested = True
+
+signal.signal(signal.SIGHUP, handle_reload)
+
+def clamp_speed(value):
+    try:
+        value = int(float(value))
+    except Exception:
+        return 0
+    return max(0, min(100, value))
+
+def load_config():
+    mode = "auto"
+    speed = 50
+    curve = list(DEFAULT_CURVE)
+    parsed_curve = []
+
+    try:
+        with open(CONFIG, "r", encoding="utf-8") as fp:
+            for raw in fp:
+                line = raw.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, value = [part.strip() for part in line.split("=", 1)]
+                low_key = key.lower()
+                if low_key == "mode":
+                    low_value = value.lower()
+                    if low_value in ("auto", "off", "fixed"):
+                        mode = low_value
+                elif low_key == "speed":
+                    speed = clamp_speed(value)
+                else:
+                    try:
+                        temp = float(key)
+                        fan = clamp_speed(value)
+                    except Exception:
+                        continue
+                    if 0 <= temp <= 100:
+                        parsed_curve.append((temp, fan))
+    except FileNotFoundError:
+        pass
+
+    if parsed_curve:
+        curve = sorted(parsed_curve, reverse=True)
+    return mode, speed, curve
+
+def cpu_temp():
+    try:
+        with open("/sys/class/thermal/thermal_zone0/temp", "r", encoding="utf-8") as fp:
+            return float(fp.read().strip()) / 1000.0
+    except Exception:
+        return 0.0
+
+def bus_obj():
+    if smbus is None:
+        return None
+    for bus_id in (1, 0):
+        try:
+            return smbus.SMBus(bus_id)
+        except Exception:
+            continue
+    return None
+
+def close_bus(bus):
+    try:
+        bus.close()
+    except Exception:
+        pass
+
+def has_argon(bus):
+    if bus is None:
+        return False
+    try:
+        bus.read_byte_data(ADDR, REG_DUTY)
+        return True
+    except Exception:
+        return False
+
+def current_fan(bus):
+    if bus is None:
+        return 0
+    try:
+        return clamp_speed(bus.read_byte_data(ADDR, REG_DUTY))
+    except Exception:
+        return 0
+
+def write_fan(bus, speed):
+    speed = clamp_speed(speed)
+    bus.write_byte_data(ADDR, REG_DUTY, speed)
+    time.sleep(0.2)
+
+def target_speed(mode, fixed_speed, curve):
+    if mode == "off":
+        return 0
+    if mode == "fixed":
+        return clamp_speed(fixed_speed)
+
+    temp = cpu_temp()
+    for threshold, fan in curve:
+        if temp >= threshold:
+            return clamp_speed(fan)
+    return 0
+
+def emit_status():
+    mode, fixed_speed, curve = load_config()
+    bus = bus_obj()
+    available = has_argon(bus)
+    fan = current_fan(bus) if available else 0
+    temp = cpu_temp()
+    close_bus(bus)
+
+    print(f"available={1 if available else 0}")
+    print(f"mode={mode}")
+    print(f"speed={clamp_speed(fixed_speed)}")
+    print(f"fan={fan}")
+    if temp > 0:
+        print(f"temp={temp:.1f}")
+    if not available:
+        if smbus is None:
+            print("message=PYTHON SMBUS IS NOT INSTALLED.")
+        else:
+            print("message=ARGON ONE FAN CONTROLLER WAS NOT DETECTED.")
+
+def apply_once():
+    mode, fixed_speed, curve = load_config()
+    bus = bus_obj()
+    if not has_argon(bus):
+        close_bus(bus)
+        return 1
+    speed = target_speed(mode, fixed_speed, curve)
+    if speed > 0:
+        write_fan(bus, 100)
+    write_fan(bus, speed)
+    close_bus(bus)
+    return 0
+
+def daemon_loop():
+    global reload_requested
+    bus = None
+    previous = None
+
+    while True:
+        if bus is None:
+            bus = bus_obj()
+
+        if not has_argon(bus):
+            close_bus(bus)
+            bus = None
+            previous = None
+            time.sleep(60)
+            continue
+
+        mode, fixed_speed, curve = load_config()
+        speed = target_speed(mode, fixed_speed, curve)
+
+        if speed != previous or reload_requested:
+            if speed > 0 and (previous is None or previous <= 0) and speed < 100:
+                write_fan(bus, 100)
+            write_fan(bus, speed)
+            previous = speed
+            reload_requested = False
+
+        time.sleep(30)
+
+if __name__ == "__main__":
+    if len(sys.argv) > 1 and sys.argv[1] == "--status":
+        emit_status()
+        raise SystemExit(0)
+    if len(sys.argv) > 1 and sys.argv[1] == "--once":
+        raise SystemExit(apply_once())
+    daemon_loop()
+PY
+
+    pi240_install_file_from_stdin "$helper" 0755 <<'HELPER'
+#!/usr/bin/env bash
+set -euo pipefail
+
+action="${1:-status}"
+value="${2:-auto}"
+daemon="/usr/local/sbin/240mp-argon-fan-daemon"
+config="/etc/240mp-argon-fan.conf"
+unit="240mp-argon-fan.service"
+
+systemd_live() {
+    [ -d /run/systemd/system ]
+}
+
+bounded_speed() {
+    local raw="$1"
+    raw="${raw%\%}"
+    case "$raw" in
+        ''|*[!0-9]*) echo 50 ;;
+        *)
+            if [ "$raw" -lt 0 ]; then echo 0
+            elif [ "$raw" -gt 100 ]; then echo 100
+            else echo "$raw"
+            fi
+            ;;
+    esac
+}
+
+write_config() {
+    local mode="$1"
+    local speed="${2:-50}"
+    local tmp
+    tmp="$(mktemp)"
+    {
+        echo '# CRT Station Argon ONE fan control'
+        echo '# mode=auto|off|fixed'
+        printf 'mode=%s\n' "$mode"
+        printf 'speed=%s\n' "$(bounded_speed "$speed")"
+        echo '55=30'
+        echo '60=55'
+        echo '65=100'
+    } > "$tmp"
+    install -D -m 0644 "$tmp" "$config"
+    rm -f "$tmp"
+}
+
+ensure_default_config() {
+    [ -f "$config" ] || write_config auto 50
+}
+
+emit_status() {
+    local active=0
+    if systemctl is-active --quiet "$unit" >/dev/null 2>&1; then
+        active=1
+    fi
+    "$daemon" --status || true
+    printf 'active=%s\n' "$active"
+}
+
+restart_service() {
+    systemctl daemon-reload >/dev/null 2>&1 || true
+    systemctl enable "$unit" >/dev/null 2>&1 || true
+    if systemd_live; then
+        systemctl restart "$unit" >/dev/null 2>&1 || true
+    else
+        "$daemon" --once >/dev/null 2>&1 || true
+    fi
+}
+
+case "$action" in
+    status)
+        ensure_default_config
+        emit_status
+        ;;
+    set)
+        case "$(printf '%s' "$value" | tr '[:upper:]' '[:lower:]')" in
+            auto|automatic)
+                write_config auto 50
+                ;;
+            off|0|0%)
+                write_config off 0
+                ;;
+            *)
+                write_config fixed "$(bounded_speed "$value")"
+                ;;
+        esac
+        restart_service
+        emit_status
+        ;;
+    *)
+        echo "usage: $0 [status|set <auto|off|percent>]" >&2
+        exit 2
+        ;;
+esac
+HELPER
+
+    pi240_install_file_from_stdin "$service" 0644 <<UNIT
+[Unit]
+Description=CRT Station Argon ONE fan control
+After=multi-user.target
+
+[Service]
+Type=simple
+ExecStart=${daemon}
+Restart=always
+RestartSec=10s
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+
+    pi240_install_file_from_stdin /etc/sudoers.d/240mp-argon-fan-control 0440 <<SUDOERS
+${service_user} ALL=(root) NOPASSWD: ${helper}
+SUDOERS
+
+    if command -v visudo >/dev/null 2>&1; then
+        pi240_root visudo -cf /etc/sudoers.d/240mp-argon-fan-control
+    fi
+
+    pi240_root "$helper" status >/dev/null 2>&1 || true
+    pi240_root systemctl daemon-reload || true
+    pi240_root systemctl enable 240mp-argon-fan.service || true
+    if [ -d /run/systemd/system ]; then
+        pi240_root systemctl restart 240mp-argon-fan.service || true
+    fi
 }
 
 pi240_install_retro_mount_helper() {

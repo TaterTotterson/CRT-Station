@@ -59,6 +59,8 @@ public:
     Q_INVOKABLE QVariantMap pairBluetoothDevice(const QString &address);
     Q_INVOKABLE QVariantMap connectBluetoothDevice(const QString &address);
     Q_INVOKABLE QVariantMap forgetBluetoothDevice(const QString &address);
+    Q_INVOKABLE QVariantMap getArgonFanInfo() const;
+    Q_INVOKABLE QVariantMap setArgonFanMode(const QString &mode);
 
     // Registers a module backend: stores it for action routing, exposes it to QML under
     // contextProperty, and connects its optional signals/slots by introspection (only

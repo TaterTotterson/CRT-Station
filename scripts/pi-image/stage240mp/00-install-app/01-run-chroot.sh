@@ -17,6 +17,7 @@ pi240_install_update_helper "$PI240_SERVICE_USER" /usr/local/sbin/240mp-update /
 pi240_install_ssh_control "$PI240_SERVICE_USER" /usr/local/sbin/240mp-ssh-control "${PI240_ENABLE_SSH:-1}"
 pi240_install_bluetooth_control "$PI240_SERVICE_USER" /usr/local/sbin/240mp-bluetooth-control "${PI240_ENABLE_BLUETOOTH:-1}"
 pi240_install_retro_mount_helper "$PI240_SERVICE_USER" /usr/local/sbin/240mp-retro-mount
+pi240_install_argon_fan_control "$PI240_SERVICE_USER" /usr/local/sbin/240mp-argon-fan-control
 case "${PI240_IMAGE_PROFILE:-}" in
     crt-ntsc)
         pi240_force_composite_video ntsc

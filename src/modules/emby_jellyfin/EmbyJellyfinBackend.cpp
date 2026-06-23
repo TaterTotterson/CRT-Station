@@ -64,6 +64,22 @@ QString abbreviatedNetworkBody(const QByteArray &body) {
     return QString::fromUtf8(body.left(240)).simplified();
 }
 
+QString serverMessageFromJson(const QJsonObject &data) {
+    const QStringList keys = {
+        QStringLiteral("Message"),
+        QStringLiteral("ErrorMessage"),
+        QStringLiteral("Error"),
+        QStringLiteral("error"),
+        QStringLiteral("message")
+    };
+    for (const QString &key : keys) {
+        const QString value = data.value(key).toString().trimmed();
+        if (!value.isEmpty())
+            return value;
+    }
+    return {};
+}
+
 bool runningOnRaspberryPi3() {
 #ifdef Q_OS_LINUX
     QFile f(QStringLiteral("/proc/device-tree/model"));
@@ -231,13 +247,41 @@ QJsonObject EmbyJellyfinBackend::loadConfig() const {
 
 QString EmbyJellyfinBackend::normalizeServerUrl(const QString &raw) {
     QString url = raw.trimmed();
-    while (url.endsWith('/')) url.chop(1);
     if (url.isEmpty()) return {};
     if (!url.startsWith("http://", Qt::CaseInsensitive) &&
         !url.startsWith("https://", Qt::CaseInsensitive)) {
         url = "http://" + url;
     }
-    return url;
+
+    QUrl parsed(url);
+    if (!parsed.isValid() || parsed.scheme().isEmpty() || parsed.host().isEmpty())
+        return {};
+
+    parsed.setQuery(QString());
+    parsed.setFragment({});
+
+    QString path = parsed.path();
+    while (path.endsWith('/') && path != QStringLiteral("/"))
+        path.chop(1);
+
+    const QString lowerPath = path.toLower();
+    int webIndex = -1;
+    if (lowerPath == QStringLiteral("/web") ||
+        lowerPath.startsWith(QStringLiteral("/web/"))) {
+        webIndex = 0;
+    } else if (lowerPath.endsWith(QStringLiteral("/web"))) {
+        webIndex = path.size() - 4;
+    } else {
+        webIndex = lowerPath.indexOf(QStringLiteral("/web/"));
+    }
+
+    if (webIndex >= 0)
+        parsed.setPath(path.left(webIndex));
+
+    QString normalized = parsed.toString(QUrl::RemoveQuery | QUrl::RemoveFragment);
+    while (normalized.endsWith('/'))
+        normalized.chop(1);
+    return normalized;
 }
 
 QString EmbyJellyfinBackend::clientId() const {
@@ -548,11 +592,29 @@ void EmbyJellyfinBackend::login(const QString &rawServerUrl,
         reply->deleteLater();
         QByteArray bytes = reply->readAll();
         if (reply->error() != QNetworkReply::NoError) {
-            emit errorOccurred("SIGN IN FAILED: " + reply->errorString());
+            QString message = "SIGN IN FAILED: " + reply->errorString();
+            const QString body = abbreviatedNetworkBody(bytes);
+            if (!body.isEmpty())
+                message += " - " + body;
+            emit errorOccurred(message);
             return;
         }
 
-        QJsonObject data = QJsonDocument::fromJson(bytes).object();
+        QJsonParseError parseError;
+        QJsonDocument doc = QJsonDocument::fromJson(bytes, &parseError);
+        if (parseError.error != QJsonParseError::NoError || !doc.isObject()) {
+            QString message = "SIGN IN FAILED: INVALID AUTH RESPONSE";
+            const QString body = abbreviatedNetworkBody(bytes);
+            if (!body.isEmpty())
+                message += " - " + body;
+            qWarning("[EmbyJellyfinBackend] Invalid auth response from %s: %s",
+                     qPrintable(normalized),
+                     qPrintable(body));
+            emit errorOccurred(message);
+            return;
+        }
+
+        QJsonObject data = doc.object();
         QString token = data["AccessToken"].toString();
         QJsonObject user = data["User"].toObject();
         QString uid = user["Id"].toString();
@@ -560,7 +622,16 @@ void EmbyJellyfinBackend::login(const QString &rawServerUrl,
             uid = data["SessionInfo"].toObject()["UserId"].toString();
 
         if (token.isEmpty() || uid.isEmpty()) {
-            emit errorOccurred("SIGN IN FAILED: EMPTY AUTH RESPONSE");
+            QString message = "SIGN IN FAILED: EMPTY AUTH RESPONSE";
+            const QString serverMessage = serverMessageFromJson(data);
+            if (!serverMessage.isEmpty())
+                message += " - " + serverMessage;
+            qWarning("[EmbyJellyfinBackend] Empty auth response from %s. token=%s uid=%s keys=%s",
+                     qPrintable(normalized),
+                     token.isEmpty() ? "missing" : "present",
+                     uid.isEmpty() ? "missing" : "present",
+                     qPrintable(data.keys().join(',')));
+            emit errorOccurred(message);
             return;
         }
 
