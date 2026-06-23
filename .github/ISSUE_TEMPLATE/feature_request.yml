@@ -6,7 +6,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        For open-ended "what if..." brainstorming, [Discussions](https://github.com/TaterTotterson/240-MP-Emby-Jelly/discussions/categories/ideas) may be a better fit. Please only use this form for a concrete, scoped idea.
+        For open-ended "what if..." brainstorming, [Discussions](https://github.com/TaterTotterson/CRT-Station/discussions/categories/ideas) may be a better fit. Please only use this form for a concrete, scoped idea.
   - type: dropdown
     id: area
     attributes:
@@ -36,7 +36,7 @@ body:
     id: principles
     attributes:
       label: Alignment with the project's approach
-      description: CRT Station is a browsing shell that hands off to purpose-built tools, navigable with a simple remote. See [CONTRIBUTING.md](https://github.com/TaterTotterson/240-MP-Emby-Jelly/blob/main/CONTRIBUTING.md).
+      description: CRT Station is a browsing shell that hands off to purpose-built tools, navigable with a simple remote. See [CONTRIBUTING.md](https://github.com/TaterTotterson/CRT-Station/blob/main/CONTRIBUTING.md).
       options:
         - label: This fits the "browse & hand-off" approach and works with remote-only navigation (up/down/left/right, enter, esc/back).
           required: true

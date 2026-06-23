@@ -1,6 +1,6 @@
 # Contributing to CRT Station
 
-Thank you for considering contributing to CRT Station. This fork is focused on a Raspberry Pi 4 composite-to-CRT appliance with Argon IR remote support. If you have any questions, please create a post in [Discussions > Q&A](https://github.com/TaterTotterson/240-MP-Emby-Jelly/discussions/categories/q-a).
+Thank you for considering contributing to CRT Station. This fork is focused on a Raspberry Pi 4 composite-to-CRT appliance with Argon IR remote support. If you have any questions, please create a post in [Discussions > Q&A](https://github.com/TaterTotterson/CRT-Station/discussions/categories/q-a).
 
 ## Non-code contributions
 
@@ -15,7 +15,7 @@ The most useful community contributions are often not code, items like the follo
 
 1. **Set up an environment** — follow [BUILDING.md](BUILDING.md) to build and run on Raspberry Pi OS, or to use macOS (ARM) for local testing.
 2. **Understand the codebase** — read [ARCHITECTURE.md](ARCHITECTURE.md). It's the technical reference for how the shell, modules, and views fit together.
-3. **Discuss first if it's big** — for anything beyond a small fix, a quick post in [Discussions > Q&A](https://github.com/TaterTotterson/240-MP-Emby-Jelly/discussions/categories/q-a) can help make sure it fits the project's direction before you invest time.
+3. **Discuss first if it's big** — for anything beyond a small fix, a quick post in [Discussions > Q&A](https://github.com/TaterTotterson/CRT-Station/discussions/categories/q-a) can help make sure it fits the project's direction before you invest time.
 4. **Branch and open a PR** — fork, work on a branch, and open a pull request against `main` with a clear description (see the [AI use](#note-on-ai-use) note below for what to disclose).
 
 ## Submitting code

@@ -18,7 +18,7 @@ The release images are built for:
 
 ## Flash the ready-to-flash image
 
-1. Open the [latest release](https://github.com/TaterTotterson/240-MP-Emby-Jelly/releases/latest).
+1. Open the [latest release](https://github.com/TaterTotterson/CRT-Station/releases/latest).
 2. Download the `image_...crt-ntsc...img.xz` asset for an NTSC CRT, or the `image_...crt-pal...img.xz` asset for a PAL CRT.
 3. Flash it to an SD card with Raspberry Pi Imager, Balena Etcher, or `dd`.
 4. Put the SD card in a Raspberry Pi 4.
@@ -153,7 +153,7 @@ Bluetooth pairing only connects the controller. Button layout is handled by the 
 From SSH:
 
 ```bash
-bash <(curl -fsSL https://github.com/TaterTotterson/240-MP-Emby-Jelly/releases/latest/download/install.sh)
+bash <(curl -fsSL https://github.com/TaterTotterson/CRT-Station/releases/latest/download/install.sh)
 ```
 
 Then reboot:

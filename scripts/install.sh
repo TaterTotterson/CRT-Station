@@ -8,7 +8,7 @@
 # ──────────────────────────────────────────────────────────────────────────────
 set -euo pipefail
 
-REPO="TaterTotterson/240-MP-Emby-Jelly"
+REPO="TaterTotterson/CRT-Station"
 INSTALL_DIR="/opt/240mp"
 LAUNCHER="/usr/local/bin/240mp"
 SYSTEMD_SERVICE="/etc/systemd/system/240mp.service"

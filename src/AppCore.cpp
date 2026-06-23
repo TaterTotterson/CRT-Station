@@ -20,7 +20,7 @@
 
 namespace {
 constexpr const char *kDefaultUpdateManifestUrl =
-    "https://raw.githubusercontent.com/TaterTotterson/240-MP-Emby-Jelly/main/update-manifest.json";
+    "https://raw.githubusercontent.com/TaterTotterson/CRT-Station/main/update-manifest.json";
 constexpr const char *kPiUpdateHelper = "/usr/local/sbin/240mp-update";
 constexpr const char *kSshControlHelper = "/usr/local/sbin/240mp-ssh-control";
 constexpr const char *kBluetoothControlHelper = "/usr/local/sbin/240mp-bluetooth-control";
@@ -576,7 +576,7 @@ QVariantMap AppCore::getUpdateInfo() const {
     return QVariantMap{
         {"currentVersion", appVersion()},
         {"manifestUrl", updateManifestUrl()},
-        {"repo", "https://github.com/TaterTotterson/240-MP-Emby-Jelly"},
+        {"repo", "https://github.com/TaterTotterson/CRT-Station"},
         {"canInstall", canInstallUpdates()}
     };
 }
@@ -625,17 +625,19 @@ void AppCore::checkForUpdates() {
         }
 
         const QJsonObject manifest = doc.object();
-        const QString latestVersion = manifest.value("version").toString();
+        const QString manifestVersion = manifest.value("version").toString();
+        const QString latestVersion = manifest.value("app_version").toString(manifestVersion);
         const QString sourceArchive = manifest.value("source_archive").toString();
         const QString binaryArchive = manifest.value("binary_archive").toString();
         const QString repo = manifest.value("repo").toString(result.value("repo").toString());
 
         result["latestVersion"] = latestVersion;
+        result["manifestVersion"] = manifestVersion;
         result["sourceArchive"] = sourceArchive;
         result["binaryArchive"] = binaryArchive;
         result["repo"] = repo;
 
-        if (latestVersion.isEmpty() || (sourceArchive.isEmpty() && binaryArchive.isEmpty())) {
+        if (latestVersion.isEmpty() || manifestVersion.isEmpty() || (sourceArchive.isEmpty() && binaryArchive.isEmpty())) {
             result["message"] = "UPDATE MANIFEST IS MISSING VERSION OR ARCHIVE.";
             emit updateCheckFinished(result);
             return;

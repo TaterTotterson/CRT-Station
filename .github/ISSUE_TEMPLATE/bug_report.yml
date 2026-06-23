@@ -12,7 +12,7 @@ body:
     attributes:
       label: Before you file
       options:
-        - label: I checked the docs and existing [issues](https://github.com/TaterTotterson/240-MP-Emby-Jelly/issues) and didn't find this.
+        - label: I checked the docs and existing [issues](https://github.com/TaterTotterson/CRT-Station/issues) and didn't find this.
           required: true
   - type: dropdown
     id: module
