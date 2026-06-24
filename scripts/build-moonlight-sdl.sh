@@ -34,73 +34,88 @@ git -C "$SRC_DIR" submodule update --init --recursive
 # Sunshine/Steam hosts are most reliable when clients advertise an Xbox-style
 # gamepad. Keep the physical SDL mapping intact, but request an Xbox virtual pad
 # on the host instead of passing through PlayStation/Nintendo controller types.
-git -C "$SRC_DIR" apply <<'PATCH'
-diff --git a/src/input/sdl.c b/src/input/sdl.c
-index 8ee2eec..8e03246 100644
---- a/src/input/sdl.c
-+++ b/src/input/sdl.c
-@@ -317,13 +317,13 @@ static void send_controller_arrival(PGAMEPAD_STATE state) {
-   case SDL_CONTROLLER_TYPE_XBOX360:
-   case SDL_CONTROLLER_TYPE_XBOXONE:
-     type = LI_CTYPE_XBOX;
-     break;
-   case SDL_CONTROLLER_TYPE_PS3:
-   case SDL_CONTROLLER_TYPE_PS4:
-   case SDL_CONTROLLER_TYPE_PS5:
--    type = LI_CTYPE_PS;
-+    type = LI_CTYPE_XBOX;
-     break;
-   case SDL_CONTROLLER_TYPE_NINTENDO_SWITCH_PRO:
- #if SDL_VERSION_ATLEAST(2, 24, 0)
-   case SDL_CONTROLLER_TYPE_NINTENDO_SWITCH_JOYCON_LEFT:
-   case SDL_CONTROLLER_TYPE_NINTENDO_SWITCH_JOYCON_RIGHT:
-@@ -331,12 +331,16 @@ static void send_controller_arrival(PGAMEPAD_STATE state) {
- #endif
--    type = LI_CTYPE_NINTENDO;
-+    type = LI_CTYPE_XBOX;
-     break;
-   }
- 
-   LiSendControllerArrivalEvent(state->id, activeGamepadMask, type, supportedButtonFlags, capabilities);
- #endif
- }
- 
-+static void ensure_controller_arrival(PGAMEPAD_STATE state) {
-+  // Some controllers emit startup noise before the stream is ready. Re-send
-+  // arrival with real input so the host always sees a usable virtual gamepad.
-+  send_controller_arrival(state);
-+}
-+
- static PGAMEPAD_STATE get_gamepad(SDL_JoystickID sdl_id, bool add) {
-   // See if a gamepad already exists
-   for (int i = 0;i<MAX_GAMEPADS;i++) {
-@@ -431,6 +438,9 @@ static void remove_gamepad(SDL_JoystickID sdl_id) {
- void sdlinput_init(char* mappings) {
-   memset(gamepads, 0, sizeof(gamepads));
- 
-+  SDL_SetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS, "1");
-+  SDL_GameControllerEventState(SDL_ENABLE);
-+  SDL_JoystickEventState(SDL_ENABLE);
-   SDL_InitSubSystem(SDL_INIT_GAMECONTROLLER);
- #if !SDL_VERSION_ATLEAST(2, 0, 9)
-   SDL_InitSubSystem(SDL_INIT_HAPTIC);
-@@ -568,6 +578,7 @@ int sdlinput_handle_event(SDL_Window* window, SDL_Event* event) {
-     default:
-       return SDL_NOTHING;
-     }
-+    ensure_controller_arrival(gamepad);
-     LiSendMultiControllerEvent(gamepad->id, activeGamepadMask, gamepad->buttons, gamepad->leftTrigger, gamepad->rightTrigger, gamepad->leftStickX, gamepad->leftStickY, gamepad->rightStickX, gamepad->rightStickY);
-     break;
-   case SDL_CONTROLLERBUTTONDOWN:
-@@ -586,6 +597,7 @@ int sdlinput_handle_event(SDL_Window* window, SDL_Event* event) {
-     if ((gamepad->buttons & QUIT_BUTTONS) == QUIT_BUTTONS)
-       return SDL_QUIT_APPLICATION;
- 
-+    ensure_controller_arrival(gamepad);
-     LiSendMultiControllerEvent(gamepad->id, activeGamepadMask, gamepad->buttons, gamepad->leftTrigger, gamepad->rightTrigger, gamepad->leftStickX, gamepad->leftStickY, gamepad->rightStickX, gamepad->rightStickY);
-     break;
-   case SDL_CONTROLLERDEVICEADDED:
-PATCH
+# Use exact text replacements instead of a unified diff so CI fails with a clear
+# message if the pinned Moonlight source changes.
+python3 - "$SRC_DIR/src/input/sdl.c" <<'PY'
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+text = path.read_text()
+
+replacements = [
+    ("type = LI_CTYPE_PS;", "type = LI_CTYPE_XBOX;"),
+    ("type = LI_CTYPE_NINTENDO;", "type = LI_CTYPE_XBOX;"),
+    (
+        """  LiSendControllerArrivalEvent(state->id, activeGamepadMask, type, supportedButtonFlags, capabilities);
+#endif
+}
+
+static PGAMEPAD_STATE get_gamepad(SDL_JoystickID sdl_id, bool add) {
+""",
+        """  LiSendControllerArrivalEvent(state->id, activeGamepadMask, type, supportedButtonFlags, capabilities);
+#endif
+}
+
+static void ensure_controller_arrival(PGAMEPAD_STATE state) {
+  // Some controllers emit startup noise before the stream is ready. Re-send
+  // arrival with real input so the host always sees a usable virtual gamepad.
+  send_controller_arrival(state);
+}
+
+static PGAMEPAD_STATE get_gamepad(SDL_JoystickID sdl_id, bool add) {
+""",
+    ),
+    (
+        """void sdlinput_init(char* mappings) {
+  memset(gamepads, 0, sizeof(gamepads));
+
+  SDL_InitSubSystem(SDL_INIT_GAMECONTROLLER);
+""",
+        """void sdlinput_init(char* mappings) {
+  memset(gamepads, 0, sizeof(gamepads));
+
+  SDL_SetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS, "1");
+  SDL_GameControllerEventState(SDL_ENABLE);
+  SDL_JoystickEventState(SDL_ENABLE);
+  SDL_InitSubSystem(SDL_INIT_GAMECONTROLLER);
+""",
+    ),
+    (
+        """    default:
+      return SDL_NOTHING;
+    }
+    LiSendMultiControllerEvent(gamepad->id, activeGamepadMask, gamepad->buttons, gamepad->leftTrigger, gamepad->rightTrigger, gamepad->leftStickX, gamepad->leftStickY, gamepad->rightStickX, gamepad->rightStickY);
+""",
+        """    default:
+      return SDL_NOTHING;
+    }
+    ensure_controller_arrival(gamepad);
+    LiSendMultiControllerEvent(gamepad->id, activeGamepadMask, gamepad->buttons, gamepad->leftTrigger, gamepad->rightTrigger, gamepad->leftStickX, gamepad->leftStickY, gamepad->rightStickX, gamepad->rightStickY);
+""",
+    ),
+    (
+        """    if ((gamepad->buttons & QUIT_BUTTONS) == QUIT_BUTTONS)
+      return SDL_QUIT_APPLICATION;
+
+    LiSendMultiControllerEvent(gamepad->id, activeGamepadMask, gamepad->buttons, gamepad->leftTrigger, gamepad->rightTrigger, gamepad->leftStickX, gamepad->leftStickY, gamepad->rightStickX, gamepad->rightStickY);
+""",
+        """    if ((gamepad->buttons & QUIT_BUTTONS) == QUIT_BUTTONS)
+      return SDL_QUIT_APPLICATION;
+
+    ensure_controller_arrival(gamepad);
+    LiSendMultiControllerEvent(gamepad->id, activeGamepadMask, gamepad->buttons, gamepad->leftTrigger, gamepad->rightTrigger, gamepad->leftStickX, gamepad->leftStickY, gamepad->rightStickX, gamepad->rightStickY);
+""",
+    ),
+]
+
+for old, new in replacements:
+    if old not in text:
+        raise SystemExit(f"Moonlight SDL patch failed; expected block not found in {path}")
+    text = text.replace(old, new, 1)
+
+path.write_text(text)
+PY
 
 cmake -S "$SRC_DIR" -B "$BUILD_DIR" \
     -DCMAKE_BUILD_TYPE=Release \
