@@ -73,6 +73,7 @@ signals:
     void appSettingChanged(const QString &key, const QString &value);
     void moduleSettingChanged(const QString &moduleId, const QString &key, const QVariant &value);
     void dynamicOptionsReady(const QString &moduleId, const QString &key, const QVariant &options);
+    void moduleErrorOccurred(const QString &moduleId, const QString &message);
     void moduleAuthStateChanged(const QString &moduleId);
     void updateCheckFinished(const QVariantMap &result);
     void updateInstallFinished(const QVariantMap &result);
@@ -83,6 +84,7 @@ private slots:
     // the module ID via sender() reverse-lookup. Lets registerModule connect any backend
     // generically, with no per-module forwarding lambdas.
     void onBackendDynamicOptions(const QString &key, const QVariant &options);
+    void onBackendErrorOccurred(const QString &message);
     void onBackendAuthStateChanged();
 
 private:

@@ -656,6 +656,14 @@ void AppCore::registerModule(const QString &moduleId, const QString &contextProp
         QMetaObject::connect(backend, sig, this, slot);
     }
 
+    // errorOccurred(message) -> onBackendErrorOccurred (re-emit with moduleId)
+    sig = bmo->indexOfSignal(QMetaObject::normalizedSignature("errorOccurred(QString)"));
+    if (sig >= 0) {
+        int slot = amo->indexOfSlot(
+            QMetaObject::normalizedSignature("onBackendErrorOccurred(QString)"));
+        QMetaObject::connect(backend, sig, this, slot);
+    }
+
     // authStateChanged() -> onBackendAuthStateChanged (re-emit with moduleId)
     sig = bmo->indexOfSignal(QMetaObject::normalizedSignature("authStateChanged()"));
     if (sig >= 0) {
@@ -685,6 +693,12 @@ void AppCore::onBackendDynamicOptions(const QString &key, const QVariant &option
     QString moduleId = moduleIdForBackend(sender());
     if (!moduleId.isEmpty())
         emit dynamicOptionsReady(moduleId, key, options);
+}
+
+void AppCore::onBackendErrorOccurred(const QString &message) {
+    QString moduleId = moduleIdForBackend(sender());
+    if (!moduleId.isEmpty())
+        emit moduleErrorOccurred(moduleId, message);
 }
 
 void AppCore::onBackendAuthStateChanged() {

@@ -25,6 +25,7 @@ FocusScope {
     property bool loadingPlaylist: false
     property bool addingPlaylist: false
     property bool stoppingPlayback: false
+    property string pendingPlaylistInput: ""
 
     focus: true
 
@@ -65,9 +66,19 @@ FocusScope {
 
     function showAdd(message) {
         mode = "add"
+        addingPlaylist = false
+        pendingPlaylistInput = ""
+        addLookupTimer.stop()
         statusText = message || "ADD PLAYLIST"
         playlistField.text = ""
         addFocusTimer.restart()
+    }
+
+    function cancelAdd() {
+        addingPlaylist = false
+        pendingPlaylistInput = ""
+        addLookupTimer.stop()
+        loadPlaylistLibrary(currentPlaylistIndex)
     }
 
     function savePlaylistRows(nextPlaylists) {
@@ -106,13 +117,22 @@ FocusScope {
         }
 
         addingPlaylist = true
+        pendingPlaylistInput = value
         statusText = "READING PLAYLIST INFO..."
+        addLookupTimer.restart()
+    }
+
+    function finishAddPlaylist(value) {
+        if (!addingPlaylist)
+            return
         var info = youtubePlaylistBackend.resolve_playlist_info(value)
         addingPlaylist = false
+        pendingPlaylistInput = ""
 
         if (!info || info.ok !== true || !info.url) {
-            statusText = (info && info.message) ? info.message : "PLAYLIST LOOKUP FAILED"
+            statusText = (info && info.message) ? info.message : "PLAYLIST LOOKUP FAILED - TRY AGAIN"
             playlistField.forceActiveFocus()
+            playlistField.selectAll()
             return
         }
 
@@ -133,6 +153,7 @@ FocusScope {
         var next = playlists.slice()
         next.push(item)
         savePlaylistRows(next)
+        statusText = "PLAYLIST ADDED"
         loadPlaylistLibrary(next.length - 1)
     }
 
@@ -222,7 +243,7 @@ FocusScope {
 
         if (mode === "add") {
             if (event.key === Qt.Key_Escape || event.key === Qt.Key_Backspace || event.key === Qt.Key_Back) {
-                loadPlaylistLibrary(currentPlaylistIndex)
+                cancelAdd()
                 event.accepted = true
             }
             return
@@ -307,6 +328,13 @@ FocusScope {
             playlistField.forceActiveFocus()
             playlistField.selectAll()
         }
+    }
+
+    Timer {
+        id: addLookupTimer
+        interval: 50
+        repeat: false
+        onTriggered: mixRoot.finishAddPlaylist(mixRoot.pendingPlaylistInput)
     }
 
     Connections {
@@ -434,7 +462,7 @@ FocusScope {
                 Keys.onEnterPressed: mixRoot.addPlaylist()
                 Keys.onPressed: function(event) {
                     if (event.key === Qt.Key_Escape || event.key === Qt.Key_Back) {
-                        mixRoot.loadPlaylistLibrary(mixRoot.currentPlaylistIndex)
+                        mixRoot.cancelAdd()
                         event.accepted = true
                     }
                 }

@@ -24,7 +24,9 @@ public:
     Q_INVOKABLE void refresh_playlist_cache();
     Q_INVOKABLE void refresh_playlist(const QString &input);
     Q_INVOKABLE void load_playlist_remove_options();
+    Q_INVOKABLE void load_playlist_rename_options();
     Q_INVOKABLE void remove_selected_playlist();
+    Q_INVOKABLE void rename_selected_playlist();
 
 signals:
     void playlistLoaded(const QString &title, const QVariantList &items);

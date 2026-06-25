@@ -40,6 +40,27 @@
       "requires_auth": true
     },
     {
+      "key": "rename_playlist_id",
+      "label": "PLAYLIST TO RENAME",
+      "type": "list_single",
+      "options_source": "dynamic",
+      "options_slot": "load_playlist_rename_options",
+      "requires_auth": true
+    },
+    {
+      "key": "rename_playlist_title",
+      "label": "NEW PLAYLIST NAME",
+      "type": "text",
+      "requires_auth": true
+    },
+    {
+      "key": "rename_playlist",
+      "label": "RENAME PLAYLIST",
+      "type": "action",
+      "action_slot": "rename_selected_playlist",
+      "requires_auth": true
+    },
+    {
       "key": "refresh_playlist_cache",
       "label": "REFRESH PLAYLISTS",
       "type": "action",

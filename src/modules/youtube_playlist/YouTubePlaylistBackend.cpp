@@ -21,8 +21,8 @@
 namespace {
 constexpr const char *kModuleId = "com.240mp.youtube_playlist";
 constexpr const char *kLegacyPlaylistCacheFile = "public-access-cache.json";
-constexpr int kPlaylistCacheVersion = 1;
-constexpr int kPlaylistLimit = 250;
+constexpr int kPlaylistCacheVersion = 2;
+constexpr int kPlaylistLimit = 500;
 
 QStringList executableSearchPaths()
 {
@@ -83,13 +83,221 @@ QString decodeJsonString(const QString &value)
     return value;
 }
 
-QVariantList playlistItemsFromHtml(const QString &playlistUrl, int limit)
+QString decodeHtmlEntities(QString value)
 {
+    value.replace(QStringLiteral("&amp;"), QStringLiteral("&"));
+    value.replace(QStringLiteral("&quot;"), QStringLiteral("\""));
+    value.replace(QStringLiteral("&#39;"), QStringLiteral("'"));
+    value.replace(QStringLiteral("&apos;"), QStringLiteral("'"));
+    value.replace(QStringLiteral("&lt;"), QStringLiteral("<"));
+    value.replace(QStringLiteral("&gt;"), QStringLiteral(">"));
+
+    QRegularExpression numericRe(QStringLiteral("&#(x?[0-9A-Fa-f]+);"));
+    QRegularExpressionMatch match;
+    int offset = 0;
+    while ((match = numericRe.match(value, offset)).hasMatch()) {
+        const QString code = match.captured(1);
+        bool ok = false;
+        const uint point = code.startsWith(QLatin1Char('x'), Qt::CaseInsensitive)
+            ? code.mid(1).toUInt(&ok, 16)
+            : code.toUInt(&ok, 10);
+        if (!ok) {
+            offset = match.capturedEnd();
+            continue;
+        }
+        const char32_t character = static_cast<char32_t>(point);
+        value.replace(match.capturedStart(), match.capturedLength(),
+                      QString::fromUcs4(&character, 1));
+        offset = match.capturedStart() + 1;
+    }
+
+    return value;
+}
+
+QString textFromYouTubeText(const QJsonValue &value)
+{
+    if (value.isString())
+        return cleanTitle(value.toString(), QString());
+    if (!value.isObject())
+        return QString();
+
+    const QJsonObject obj = value.toObject();
+    QString text = obj.value(QStringLiteral("simpleText")).toString();
+    if (text.isEmpty()) {
+        const QJsonArray runs = obj.value(QStringLiteral("runs")).toArray();
+        for (const QJsonValue &runValue : runs) {
+            const QString part = runValue.toObject().value(QStringLiteral("text")).toString();
+            if (!part.isEmpty()) {
+                text += part;
+            }
+        }
+    }
+
+    return cleanTitle(text, QString());
+}
+
+QString extractJsonObjectAfter(const QString &text, const QString &marker)
+{
+    const int markerIndex = text.indexOf(marker);
+    if (markerIndex < 0)
+        return QString();
+
+    const int start = text.indexOf('{', markerIndex + marker.size());
+    if (start < 0)
+        return QString();
+
+    bool inString = false;
+    bool escaped = false;
+    int depth = 0;
+    for (int i = start; i < text.size(); ++i) {
+        const QChar ch = text.at(i);
+        if (inString) {
+            if (escaped) {
+                escaped = false;
+            } else if (ch == QLatin1Char('\\')) {
+                escaped = true;
+            } else if (ch == QLatin1Char('"')) {
+                inString = false;
+            }
+            continue;
+        }
+
+        if (ch == QLatin1Char('"')) {
+            inString = true;
+        } else if (ch == QLatin1Char('{')) {
+            ++depth;
+        } else if (ch == QLatin1Char('}')) {
+            --depth;
+            if (depth == 0)
+                return text.mid(start, i - start + 1);
+        }
+    }
+
+    return QString();
+}
+
+QString playlistTitleFromInitialData(const QJsonValue &value)
+{
+    if (value.isArray()) {
+        for (const QJsonValue &child : value.toArray()) {
+            const QString title = playlistTitleFromInitialData(child);
+            if (!title.isEmpty())
+                return title;
+        }
+        return QString();
+    }
+    if (!value.isObject())
+        return QString();
+
+    const QJsonObject obj = value.toObject();
+    const QJsonObject metadata = obj.value(QStringLiteral("playlistMetadataRenderer")).toObject();
+    const QString metadataTitle = cleanTitle(metadata.value(QStringLiteral("title")).toString(),
+                                             QString());
+    if (!metadataTitle.isEmpty())
+        return metadataTitle;
+
+    const QJsonObject header = obj.value(QStringLiteral("playlistHeaderRenderer")).toObject();
+    const QString headerTitle = textFromYouTubeText(header.value(QStringLiteral("title")));
+    if (!headerTitle.isEmpty())
+        return headerTitle;
+
+    for (auto it = obj.constBegin(); it != obj.constEnd(); ++it) {
+        const QString title = playlistTitleFromInitialData(it.value());
+        if (!title.isEmpty())
+            return title;
+    }
+
+    return QString();
+}
+
+QString playlistTitleFromHtmlMeta(const QString &html)
+{
+    const QRegularExpression metaRe(QStringLiteral(
+        "<meta\\s+[^>]*(?:property|name)=[\"'](?:og:title|title)[\"'][^>]*content=[\"']([^\"']+)[\"']"),
+        QRegularExpression::CaseInsensitiveOption);
+    QRegularExpressionMatch match = metaRe.match(html);
+    if (!match.hasMatch()) {
+        const QRegularExpression reversedRe(QStringLiteral(
+            "<meta\\s+[^>]*content=[\"']([^\"']+)[\"'][^>]*(?:property|name)=[\"'](?:og:title|title)[\"']"),
+            QRegularExpression::CaseInsensitiveOption);
+        match = reversedRe.match(html);
+    }
+    if (!match.hasMatch())
+        return QString();
+
+    QString title = decodeHtmlEntities(match.captured(1));
+    title.remove(QRegularExpression("\\s+-\\s+YouTube\\s*$", QRegularExpression::CaseInsensitiveOption));
+    return cleanTitle(title, QString());
+}
+
+QString textFromLockupTitle(const QJsonObject &renderer)
+{
+    const QJsonObject metadata = renderer.value(QStringLiteral("metadata")).toObject()
+        .value(QStringLiteral("lockupMetadataViewModel")).toObject();
+    return cleanTitle(metadata.value(QStringLiteral("title")).toObject()
+                          .value(QStringLiteral("content")).toString(),
+                      QString());
+}
+
+void collectRendererVideos(const QJsonValue &value,
+                           const QString &rendererKey,
+                           int limit,
+                           QSet<QString> &seen,
+                           QVariantList &items)
+{
+    if (items.size() >= limit)
+        return;
+
+    if (value.isArray()) {
+        const QJsonArray array = value.toArray();
+        for (const QJsonValue &child : array) {
+            collectRendererVideos(child, rendererKey, limit, seen, items);
+            if (items.size() >= limit)
+                return;
+        }
+        return;
+    }
+
+    if (!value.isObject())
+        return;
+
+    const QJsonObject obj = value.toObject();
+    const QJsonObject renderer = obj.value(rendererKey).toObject();
+    const bool lockup = rendererKey == QLatin1String("lockupViewModel");
+    const QString id = renderer.value(lockup ? QStringLiteral("contentId")
+                                             : QStringLiteral("videoId"))
+                           .toString()
+                           .trimmed();
+    if (id.size() == 11 && !seen.contains(id)) {
+        seen.insert(id);
+        QVariantMap item;
+        item[QStringLiteral("id")] = id;
+        item[QStringLiteral("url")] = QStringLiteral("https://www.youtube.com/watch?v=%1").arg(id);
+        item[QStringLiteral("title")] = cleanTitle(
+            lockup ? textFromLockupTitle(renderer)
+                   : textFromYouTubeText(renderer.value(QStringLiteral("title"))),
+            QStringLiteral("VIDEO %1").arg(items.size() + 1));
+        item[QStringLiteral("index")] = items.size();
+        items.append(item);
+        if (items.size() >= limit)
+            return;
+    }
+
+    for (auto it = obj.constBegin(); it != obj.constEnd(); ++it) {
+        collectRendererVideos(it.value(), rendererKey, limit, seen, items);
+        if (items.size() >= limit)
+            return;
+    }
+}
+
+QVariantMap playlistDataFromHtml(const QString &playlistUrl, int limit)
+{
+    QVariantMap result;
     QVariantList items;
     const QString curlPath = QStandardPaths::findExecutable(QStringLiteral("curl"),
                                                             executableSearchPaths());
     if (curlPath.isEmpty())
-        return items;
+        return result;
 
     QProcess process;
     process.setProcessChannelMode(QProcess::SeparateChannels);
@@ -102,21 +310,42 @@ QVariantList playlistItemsFromHtml(const QString &playlistUrl, int limit)
         playlistUrl
     });
     if (!process.waitForStarted(2000))
-        return items;
+        return result;
     if (!process.waitForFinished(25000)) {
         process.kill();
         process.waitForFinished(1000);
-        return items;
+        return result;
     }
     if (process.exitStatus() != QProcess::NormalExit || process.exitCode() != 0)
-        return items;
+        return result;
 
     const QString html = QString::fromUtf8(process.readAllStandardOutput());
+    const QString initialData = extractJsonObjectAfter(html, QStringLiteral("ytInitialData"));
+    if (!initialData.isEmpty()) {
+        QJsonParseError jsonError;
+        const QJsonDocument doc = QJsonDocument::fromJson(initialData.toUtf8(), &jsonError);
+        if (jsonError.error == QJsonParseError::NoError) {
+            result[QStringLiteral("title")] = playlistTitleFromInitialData(doc.object());
+            QSet<QString> seen;
+            collectRendererVideos(doc.object(), QStringLiteral("playlistVideoRenderer"),
+                                  limit, seen, items);
+            if (items.isEmpty())
+                collectRendererVideos(doc.object(), QStringLiteral("videoRenderer"),
+                                      limit, seen, items);
+            if (items.isEmpty())
+                collectRendererVideos(doc.object(), QStringLiteral("lockupViewModel"),
+                                      limit, seen, items);
+        }
+    }
+
     const QRegularExpression videoRe(QStringLiteral("\"videoId\"\\s*:\\s*\"([A-Za-z0-9_-]{11})\""));
     const QRegularExpression titleRe(QStringLiteral(
         "\"title\"\\s*:\\s*\\{\\s*(?:\"runs\"\\s*:\\s*\\[\\s*\\{\\s*\"text\"\\s*:\\s*\"([^\"]+)\"|\"simpleText\"\\s*:\\s*\"([^\"]+)\")"));
 
     QSet<QString> seen;
+    for (const QVariant &value : items)
+        seen.insert(value.toMap().value(QStringLiteral("id")).toString());
+
     QRegularExpressionMatchIterator it = videoRe.globalMatch(html);
     while (it.hasNext() && items.size() < limit) {
         const QRegularExpressionMatch match = it.next();
@@ -141,8 +370,12 @@ QVariantList playlistItemsFromHtml(const QString &playlistUrl, int limit)
         items.append(item);
     }
 
-    return items;
+    if (result.value(QStringLiteral("title")).toString().isEmpty())
+        result[QStringLiteral("title")] = playlistTitleFromHtmlMeta(html);
+    result[QStringLiteral("items")] = items;
+    return result;
 }
+
 }
 
 YouTubePlaylistBackend::YouTubePlaylistBackend(const QString &appRoot,
@@ -380,7 +613,7 @@ QString YouTubePlaylistBackend::normalize_playlist_input(const QString &input) c
         if (!listId.isEmpty())
             raw = listId;
         else
-            return raw;
+            return QString();
     }
 
     raw.remove(QRegularExpression("[^A-Za-z0-9_-]"));
@@ -473,16 +706,24 @@ QVariantMap YouTubePlaylistBackend::resolve_playlist_info(const QString &input) 
 
     QString error;
     const QVariantMap info = inspectPlaylist(playlistUrl, 1, &error);
-    const QString title = cleanTitle(info.value(QStringLiteral("title")).toString(),
-                                     fallbackPlaylistTitle(input, 0));
+    const QVariantMap fallbackData = error.isEmpty()
+        ? QVariantMap{}
+        : playlistDataFromHtml(playlistUrl, 1);
+    const QVariantList fallbackItems = fallbackData.value(QStringLiteral("items")).toList();
+    const QString title = cleanTitle(
+        info.value(QStringLiteral("title")).toString(),
+        cleanTitle(fallbackData.value(QStringLiteral("title")).toString(),
+                   fallbackPlaylistTitle(input, 0)));
 
-    result[QStringLiteral("ok")] = error.isEmpty();
+    result[QStringLiteral("ok")] = error.isEmpty() || !fallbackItems.isEmpty();
     result[QStringLiteral("input")] = input.trimmed();
     result[QStringLiteral("url")] = playlistUrl;
     result[QStringLiteral("title")] = title;
     result[QStringLiteral("id")] = QString::fromLatin1(
         QCryptographicHash::hash(playlistUrl.toUtf8(), QCryptographicHash::Sha1).toHex());
-    result[QStringLiteral("message")] = error;
+    result[QStringLiteral("message")] = error.isEmpty() || !fallbackItems.isEmpty()
+        ? QString()
+        : error;
     return result;
 }
 
@@ -507,11 +748,17 @@ void YouTubePlaylistBackend::load_playlist_remove_options()
     emit dynamicOptionsReady(QStringLiteral("remove_playlist_id"), playlistRemovalOptions());
 }
 
+void YouTubePlaylistBackend::load_playlist_rename_options()
+{
+    emit dynamicOptionsReady(QStringLiteral("rename_playlist_id"), playlistRemovalOptions());
+}
+
 void YouTubePlaylistBackend::remove_selected_playlist()
 {
     const QVariantList saved = get_saved_playlists();
     if (saved.isEmpty()) {
         emit dynamicOptionsReady(QStringLiteral("remove_playlist_id"), QVariantList{});
+        emit dynamicOptionsReady(QStringLiteral("rename_playlist_id"), QVariantList{});
         emit authStateChanged();
         return;
     }
@@ -538,19 +785,26 @@ void YouTubePlaylistBackend::remove_selected_playlist()
         remaining.append(clean);
     }
 
-    if (remaining.size() == saved.size())
+    if (remaining.size() == saved.size()) {
+        emit errorOccurred(QStringLiteral("PLAYLIST NOT FOUND"));
         return;
+    }
 
     QJsonObject config = loadConfig();
     QJsonObject modules = config.value(QStringLiteral("modules")).toObject();
     QJsonObject module = modules.value(QString::fromUtf8(kModuleId)).toObject();
     module[QStringLiteral("playlists")] = QJsonValue::fromVariant(remaining);
     module.remove(QStringLiteral("playlist_input"));
-    if (remaining.isEmpty())
+    if (remaining.isEmpty()) {
         module.remove(QStringLiteral("remove_playlist_id"));
-    else
-        module[QStringLiteral("remove_playlist_id")] =
-            remaining.first().toMap().value(QStringLiteral("id")).toString();
+        module.remove(QStringLiteral("rename_playlist_id"));
+        module.remove(QStringLiteral("rename_playlist_title"));
+    } else {
+        const QString firstId = remaining.first().toMap().value(QStringLiteral("id")).toString();
+        module[QStringLiteral("remove_playlist_id")] = firstId;
+        if (module.value(QStringLiteral("rename_playlist_id")).toString() == selectedId)
+            module[QStringLiteral("rename_playlist_id")] = firstId;
+    }
 
     modules[QString::fromUtf8(kModuleId)] = module;
     config[QStringLiteral("modules")] = modules;
@@ -561,6 +815,68 @@ void YouTubePlaylistBackend::remove_selected_playlist()
 
     clearPlaylistCache(removedUrl);
     emit dynamicOptionsReady(QStringLiteral("remove_playlist_id"), playlistRemovalOptions());
+    emit dynamicOptionsReady(QStringLiteral("rename_playlist_id"), playlistRemovalOptions());
+    emit authStateChanged();
+}
+
+void YouTubePlaylistBackend::rename_selected_playlist()
+{
+    const QVariantList saved = get_saved_playlists();
+    if (saved.isEmpty()) {
+        emit dynamicOptionsReady(QStringLiteral("rename_playlist_id"), QVariantList{});
+        emit authStateChanged();
+        return;
+    }
+
+    const QVariantMap cfg = moduleConfig();
+    QString selectedId = cfg.value(QStringLiteral("rename_playlist_id")).toString();
+    if (selectedId.isEmpty())
+        selectedId = saved.first().toMap().value(QStringLiteral("id")).toString();
+
+    const QString newTitle = cleanTitle(cfg.value(QStringLiteral("rename_playlist_title")).toString(),
+                                        QString());
+    if (newTitle.isEmpty()) {
+        emit errorOccurred(QStringLiteral("ENTER PLAYLIST NAME"));
+        return;
+    }
+
+    QVariantList renamed;
+    bool changed = false;
+    for (const QVariant &value : saved) {
+        const QVariantMap playlist = value.toMap();
+        QVariantMap clean;
+        clean[QStringLiteral("id")] = playlist.value(QStringLiteral("id")).toString();
+        clean[QStringLiteral("input")] = playlist.value(QStringLiteral("input")).toString();
+        clean[QStringLiteral("url")] = playlist.value(QStringLiteral("url")).toString();
+        clean[QStringLiteral("title")] = playlist.value(QStringLiteral("title")).toString();
+        if (clean.value(QStringLiteral("id")).toString() == selectedId) {
+            clean[QStringLiteral("title")] = newTitle;
+            changed = true;
+        }
+        renamed.append(clean);
+    }
+
+    if (!changed) {
+        emit errorOccurred(QStringLiteral("PLAYLIST NOT FOUND"));
+        return;
+    }
+
+    QJsonObject config = loadConfig();
+    QJsonObject modules = config.value(QStringLiteral("modules")).toObject();
+    QJsonObject module = modules.value(QString::fromUtf8(kModuleId)).toObject();
+    module[QStringLiteral("playlists")] = QJsonValue::fromVariant(renamed);
+    module[QStringLiteral("rename_playlist_id")] = selectedId;
+    module[QStringLiteral("rename_playlist_title")] = newTitle;
+
+    modules[QString::fromUtf8(kModuleId)] = module;
+    config[QStringLiteral("modules")] = modules;
+    if (!saveConfig(config)) {
+        emit errorOccurred(QStringLiteral("COULD NOT RENAME PLAYLIST"));
+        return;
+    }
+
+    emit dynamicOptionsReady(QStringLiteral("remove_playlist_id"), playlistRemovalOptions());
+    emit dynamicOptionsReady(QStringLiteral("rename_playlist_id"), playlistRemovalOptions());
     emit authStateChanged();
 }
 
@@ -586,48 +902,50 @@ void YouTubePlaylistBackend::fetchPlaylist(const QString &input, bool forceRefre
 
     QString error;
     const QVariantMap rootMap = inspectPlaylist(playlistUrl, kPlaylistLimit, &error);
-    if (!error.isEmpty()) {
-        emit errorOccurred(error);
-        return;
-    }
-
-    const QJsonArray entries = QJsonArray::fromVariantList(rootMap.value(QStringLiteral("entries")).toList());
     QVariantList items;
-    int position = 0;
-    for (const QJsonValue &value : entries) {
-        if (!value.isObject())
-            continue;
-        const QJsonObject entry = value.toObject();
-        const QString id = entry.value(QStringLiteral("id")).toString().trimmed();
-        QString url = entry.value(QStringLiteral("url")).toString().trimmed();
-        if (url.isEmpty() && id.isEmpty())
-            continue;
-        if (!url.startsWith(QStringLiteral("http://"), Qt::CaseInsensitive) &&
-            !url.startsWith(QStringLiteral("https://"), Qt::CaseInsensitive)) {
-            const QString videoId = id.isEmpty() ? url : id;
-            url = QStringLiteral("https://www.youtube.com/watch?v=%1").arg(videoId);
-        }
+    if (error.isEmpty()) {
+        const QJsonArray entries = QJsonArray::fromVariantList(rootMap.value(QStringLiteral("entries")).toList());
+        int position = 0;
+        for (const QJsonValue &value : entries) {
+            if (!value.isObject())
+                continue;
+            const QJsonObject entry = value.toObject();
+            const QString id = entry.value(QStringLiteral("id")).toString().trimmed();
+            QString url = entry.value(QStringLiteral("url")).toString().trimmed();
+            if (url.isEmpty() && id.isEmpty())
+                continue;
+            if (!url.startsWith(QStringLiteral("http://"), Qt::CaseInsensitive) &&
+                !url.startsWith(QStringLiteral("https://"), Qt::CaseInsensitive)) {
+                const QString videoId = id.isEmpty() ? url : id;
+                url = QStringLiteral("https://www.youtube.com/watch?v=%1").arg(videoId);
+            }
 
-        QVariantMap item;
-        item["id"] = id.isEmpty() ? url : id;
-        item["url"] = url;
-        item["title"] = cleanTitle(entry.value(QStringLiteral("title")).toString(),
-                                   QStringLiteral("VIDEO %1").arg(position + 1));
-        item["index"] = position;
-        items.append(item);
-        ++position;
+            QVariantMap item;
+            item["id"] = id.isEmpty() ? url : id;
+            item["url"] = url;
+            item["title"] = cleanTitle(entry.value(QStringLiteral("title")).toString(),
+                                       QStringLiteral("VIDEO %1").arg(position + 1));
+            item["index"] = position;
+            items.append(item);
+            ++position;
+        }
     }
 
-    if (items.isEmpty() && rootMap.value(QStringLiteral("playlist_count")).toInt() > 0)
-        items = playlistItemsFromHtml(playlistUrl, kPlaylistLimit);
+    QVariantMap fallbackData;
+    if (items.isEmpty()) {
+        fallbackData = playlistDataFromHtml(playlistUrl, kPlaylistLimit);
+        items = fallbackData.value(QStringLiteral("items")).toList();
+    }
 
     if (items.isEmpty()) {
-        emit errorOccurred(QStringLiteral("PLAYLIST HAS NO VIDEOS"));
+        emit errorOccurred(error.isEmpty() ? QStringLiteral("PLAYLIST HAS NO VIDEOS") : error);
         return;
     }
 
-    const QString title = cleanTitle(rootMap.value(QStringLiteral("title")).toString(),
-                                     QStringLiteral("YOUTUBE PLAYLIST"));
+    const QString title = cleanTitle(
+        rootMap.value(QStringLiteral("title")).toString(),
+        cleanTitle(fallbackData.value(QStringLiteral("title")).toString(),
+                   QStringLiteral("YOUTUBE PLAYLIST")));
     savePlaylistCache(playlistUrl, title, items);
     emit playlistLoaded(title, items);
 }
@@ -644,8 +962,10 @@ void YouTubePlaylistBackend::onSettingChanged(const QString &moduleId,
         clearPlaylistCache();
         emit authStateChanged();
         emit dynamicOptionsReady(QStringLiteral("remove_playlist_id"), playlistRemovalOptions());
+        emit dynamicOptionsReady(QStringLiteral("rename_playlist_id"), playlistRemovalOptions());
     } else if (key == QLatin1String("playlists")) {
         emit authStateChanged();
         emit dynamicOptionsReady(QStringLiteral("remove_playlist_id"), playlistRemovalOptions());
+        emit dynamicOptionsReady(QStringLiteral("rename_playlist_id"), playlistRemovalOptions());
     }
 }

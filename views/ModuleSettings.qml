@@ -20,6 +20,8 @@ FocusScope {
     property int textOverlayIndex: -1
     property string textOverlayLabel: ""
     property string textOverlayValue: ""
+    property string actionStatusText: ""
+    property int actionStatusTimeoutMs: 3500
 
     function loadSettings() {
         var allSettings = appCore.get_settings()
@@ -118,6 +120,14 @@ FocusScope {
         closeTextEdit()
     }
 
+    function showActionStatus(message, timeoutMs) {
+        actionStatusTimer.stop()
+        actionStatusText = message || ""
+        actionStatusTimeoutMs = timeoutMs || 3500
+        if (actionStatusText !== "" && actionStatusTimeoutMs > 0)
+            actionStatusTimer.restart()
+    }
+
     function cycleValue(index, direction) {
         var item = schemaItems[index]
         if (!item) return
@@ -175,6 +185,10 @@ FocusScope {
             moduleSettingsRoot.dynamicOptions = updated
             settingsList.forceLayout()
         }
+        function onModuleErrorOccurred(mid, message) {
+            if (mid !== moduleSettingsRoot.moduleId) return
+            moduleSettingsRoot.showActionStatus(message || "ACTION FAILED", 5000)
+        }
         function onModuleAuthStateChanged(mid) {
             if (mid !== moduleSettingsRoot.moduleId) return
             buildModel()
@@ -184,6 +198,8 @@ FocusScope {
                     appCore.invoke_module_action(moduleId, item.options_slot)
                 }
             }
+            if (moduleSettingsRoot.actionStatusText === "PLEASE WAIT")
+                moduleSettingsRoot.showActionStatus("UPDATED", 2500)
         }
     }
 
@@ -247,6 +263,7 @@ FocusScope {
                     settingLabel: item.label
                 }, { currentIndex: settingsList.currentIndex })
             } else if (item.type === "action") {
+                moduleSettingsRoot.showActionStatus("PLEASE WAIT", 8000)
                 appCore.invoke_module_action(moduleSettingsRoot.moduleId, item.action_slot)
             } else if (item.type === "directory_browser") {
                 var savedPath = currentValues[item.key] || ""
@@ -375,6 +392,27 @@ FocusScope {
         anchors.bottomMargin: root.sh * 0.1041667 //50
         anchors.leftMargin: root.sw * 0.125 //80
         font.pixelSize: root.sh * 0.0333333 //16
+    }
+
+    Text {
+        visible: actionStatusText !== ""
+        text: actionStatusText
+        color: root.secondaryColor
+        font.family: root.globalFont
+        font.capitalization: Font.AllUppercase
+        anchors.bottom: footer.top
+        anchors.left: footer.left
+        anchors.bottomMargin: root.sh * 0.01875
+        width: root.sw * 0.75
+        elide: Text.ElideRight
+        font.pixelSize: root.sh * 0.0333333
+    }
+
+    Timer {
+        id: actionStatusTimer
+        interval: actionStatusTimeoutMs
+        repeat: false
+        onTriggered: actionStatusText = ""
     }
 
     Timer {

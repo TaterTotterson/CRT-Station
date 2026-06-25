@@ -1,6 +1,6 @@
 {
   "id": "com.240mp.audio_tapes",
-  "name": "Mixtapes",
+  "name": "Tape Deck",
   "order": 30,
   "icon": "assets/images/logo.svg",
   "entry_point_qml": "views/Root.qml",
