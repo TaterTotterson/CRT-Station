@@ -1050,13 +1050,44 @@ find_moonlight_bin() {
     command -v moonlight 2>/dev/null || command -v moonlight-embedded 2>/dev/null || true
 }
 
+find_v3d_drm_device() {
+    local card name node path
+    for card in /sys/class/drm/card[0-9]*; do
+        [ -e "$card" ] || continue
+        name="$(basename "$card")"
+        case "$name" in
+            card[0-9]|card[0-9][0-9]) ;;
+            *) continue ;;
+        esac
+        node="/dev/dri/$name"
+        [ -e "$node" ] || continue
+        path="$(readlink -f "$card" 2>/dev/null || true)"
+        case "$path" in
+            *v3d*)
+                printf '%s\n' "$node"
+                return 0
+                ;;
+        esac
+    done
+}
+
 find_drm_device() {
     if [ -n "${MP240_MOONLIGHT_DRM_DEVICE:-}" ] && [ -e "$MP240_MOONLIGHT_DRM_DEVICE" ]; then
         printf '%s\n' "$MP240_MOONLIGHT_DRM_DEVICE"
         return 0
     fi
 
-    local status node card
+    local status node card v3d_card
+    for status in /sys/class/drm/card*-Composite-1/status; do
+        [ -e "$status" ] || continue
+        [ "$(cat "$status" 2>/dev/null || true)" = "connected" ] || continue
+        v3d_card="$(find_v3d_drm_device || true)"
+        if [ -n "$v3d_card" ] && [ -e "$v3d_card" ]; then
+            printf '%s\n' "$v3d_card"
+            return 0
+        fi
+    done
+
     for status in /sys/class/drm/card*-Composite-1/status; do
         [ -e "$status" ] || continue
         node="$(basename "$(dirname "$status")")"
@@ -1263,6 +1294,9 @@ launch_stream() {
     if [ -n "$moonlight_bin_arg" ]; then
         run_args+=(--setenv=MP240_MOONLIGHT_BIN="$moonlight_bin_arg")
     fi
+    if [ -n "${MP240_MOONLIGHT_DRM_DEVICE:-}" ]; then
+        run_args+=(--setenv=MP240_MOONLIGHT_DRM_DEVICE="$MP240_MOONLIGHT_DRM_DEVICE")
+    fi
 
     systemd-run "${run_args[@]}" "$0" run "${moonlight_args[@]}"
 }
@@ -1365,6 +1399,7 @@ case "$action" in
         if [ -n "$bin" ] && [ -x "$bin" ]; then
             printf 'available=1\n'
             printf 'path=%s\n' "$bin"
+            printf 'drm_device=%s\n' "$(find_drm_device)"
         else
             printf 'available=0\n'
         fi

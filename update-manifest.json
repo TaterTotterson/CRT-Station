@@ -1,17 +1,15 @@
 {
-  "version": "v1.0.12",
-  "app_version": "1.0.12",
+  "version": "v1.0.13",
+  "app_version": "1.0.13",
   "channel": "main",
   "repo": "https://github.com/TaterTotterson/CRT-Station",
   "manifest_url": "https://raw.githubusercontent.com/TaterTotterson/CRT-Station/main/update-manifest.json",
-  "binary_archive": "https://github.com/TaterTotterson/CRT-Station/releases/download/v1.0.12/240-MP-v1.0.12-linux-arm64.tar.gz",
-  "source_archive": "https://github.com/TaterTotterson/CRT-Station/archive/refs/tags/v1.0.12.tar.gz",
+  "binary_archive": "https://github.com/TaterTotterson/CRT-Station/releases/download/v1.0.13/240-MP-v1.0.13-linux-arm64.tar.gz",
+  "source_archive": "https://github.com/TaterTotterson/CRT-Station/archive/refs/tags/v1.0.13.tar.gz",
   "notes": [
-    "Adds PC Link re-pair/reset pairing controls so stale Sunshine pairing state can be cleared and a fresh PIN requested.",
-    "Falls back to the system Moonlight binary when the bundled Moonlight SDL runtime has missing shared libraries.",
-    "Improves Bluetooth gamepad pairing, reconnect retries, and controller-only scan results.",
-    "Improves Public Access playlist adding, retry messages, playlist rename support, and playlist parsing fallback.",
-    "Keeps Tape Deck naming consistent across the audio module title and fallback messages.",
-    "Refreshes Settings and module list icon sizing for the CRT Station UI."
+    "Fixes PC Link streaming on composite by selecting the Pi V3D DRM card for Moonlight SDL instead of the composite connector card.",
+    "Keeps the Moonlight DRM device override available through the systemd launch helper for troubleshooting unusual display layouts.",
+    "Improves first-run PC Link pairing feedback with live status messages after the PIN appears.",
+    "Adds a PC Link pairing timeout so a failed Sunshine handshake returns to setup instead of sitting forever."
   ]
 }

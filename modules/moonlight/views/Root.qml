@@ -20,6 +20,7 @@ FocusScope {
     property int setupRow: 0
     property bool pairing: false
     property bool loadingApps: false
+    property int pairWaitStage: 0
 
     focus: true
 
@@ -36,6 +37,8 @@ FocusScope {
         pairing = false
         loadingApps = false
         pairCode = "----"
+        pairWaitStage = 0
+        pairWaitTimer.stop()
         setupRow = 0
         mode = "setup"
         setupFocusTimer.restart()
@@ -91,11 +94,7 @@ FocusScope {
             return
         }
         appCore.save_setting(moduleId, "sunshine_host", host)
-        pairing = true
-        pairCode = "----"
-        statusText = "REQUESTING PAIR CODE"
-        mode = "pairing"
-        moonlightBackend.repair_host(host)
+        startPairing(host)
     }
 
     function loadApps() {
@@ -120,9 +119,15 @@ FocusScope {
             showSetup("ENTER SUNSHINE HOST")
             return
         }
+        startPairing(host)
+    }
+
+    function startPairing(host) {
         pairing = true
         pairCode = "----"
-        statusText = "REQUESTING PAIR CODE"
+        pairWaitStage = 0
+        pairWaitTimer.stop()
+        statusText = "CONNECTING TO SUNSHINE"
         mode = "pairing"
         moonlightBackend.repair_host(host)
     }
@@ -168,6 +173,7 @@ FocusScope {
 
         if (mode === "pairing") {
             if (event.key === Qt.Key_Escape || event.key === Qt.Key_Backspace || event.key === Qt.Key_Back) {
+                pairWaitTimer.stop()
                 moonlightBackend.cancel_pairing()
                 showSetup("PAIRING CANCELLED")
                 event.accepted = true
@@ -234,16 +240,52 @@ FocusScope {
         onTriggered: focusSetupRow()
     }
 
+    Timer {
+        id: pairWaitTimer
+        interval: 12000
+        repeat: true
+        onTriggered: {
+            if (!pairing || mode !== "pairing" || pairCode === "----") {
+                stop()
+                return
+            }
+
+            pairWaitStage++
+            interval = 16000
+            if (pairWaitStage === 1)
+                statusText = "WAITING FOR SUNSHINE"
+            else if (pairWaitStage === 2)
+                statusText = "FINISHING PAIRING"
+            else
+                statusText = "STILL CONNECTING"
+        }
+    }
+
     Connections {
         target: moonlightBackend
 
         function onPairCodeReady(code) {
             pairCode = code || "----"
             statusText = "ENTER PIN IN SUNSHINE"
+            pairWaitStage = 0
+            pairWaitTimer.interval = 12000
+            pairWaitTimer.restart()
+        }
+
+        function onPairStatusChanged(message) {
+            if (!message || message.length === 0)
+                return
+            if (pairCode === "----"
+                || message === "ENTER PIN IN SUNSHINE"
+                || message === "SUNSHINE PAIRED"
+                || message === "PAIRING TIMED OUT") {
+                statusText = message
+            }
         }
 
         function onPairFinished(ok, message) {
             pairing = false
+            pairWaitTimer.stop()
             if (!ok) {
                 showSetup(message || "PAIRING FAILED")
                 return
@@ -406,7 +448,7 @@ FocusScope {
         }
 
         Text {
-            text: "OPEN SUNSHINE ON YOUR PC"
+            text: pairCode === "----" ? "SEARCHING FOR SUNSHINE" : "ENTER PIN, THEN WAIT"
             color: root.tertiaryColor
             font.family: root.globalFont
             font.capitalization: Font.AllUppercase

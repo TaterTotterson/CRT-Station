@@ -45,6 +45,7 @@ public:
 signals:
     void authStateChanged();
     void pairCodeReady(const QString &code);
+    void pairStatusChanged(const QString &message);
     void pairFinished(bool ok, const QString &message);
     void appsLoaded(const QVariantList &apps);
     void streamStarted(const QString &title);
@@ -100,6 +101,8 @@ private:
     QProcess *m_listProcess = nullptr;
     QProcess *m_streamProcess = nullptr;
     QString m_pairOutput;
+    bool m_pairTimedOut = false;
+    int m_pairSessionId = 0;
     QString m_listOutput;
     QString m_streamOutput;
     QString m_currentTitle;

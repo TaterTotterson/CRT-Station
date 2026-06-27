@@ -11,6 +11,7 @@
 #include <QRegularExpression>
 #include <QSaveFile>
 #include <QStandardPaths>
+#include <QTimer>
 #include <algorithm>
 
 #ifdef Q_OS_LINUX
@@ -358,20 +359,37 @@ void MoonlightBackend::pair_host(const QString &hostValue)
     }
 
     cancel_pairing();
+    const int sessionId = ++m_pairSessionId;
+    m_pairTimedOut = false;
     m_pairOutput.clear();
     m_pairProcess = new QProcess(this);
     m_pairProcess->setProcessChannelMode(QProcess::MergedChannels);
     prepareMoonlightEnvironment(m_pairProcess);
+
+    emit pairStatusChanged(QStringLiteral("CONNECTING TO SUNSHINE"));
 
     connect(m_pairProcess, &QProcess::readyRead, this, [this]() {
         if (!m_pairProcess)
             return;
         const QString chunk = QString::fromUtf8(m_pairProcess->readAll());
         m_pairOutput.append(chunk);
+        const QString lower = stripAnsi(chunk).toLower();
+        if (lower.contains(QStringLiteral("connecting to")))
+            emit pairStatusChanged(QStringLiteral("CONNECTING TO SUNSHINE"));
+        if (lower.contains(QStringLiteral("enter the following pin"))
+            || lower.contains(QStringLiteral("please enter"))) {
+            emit pairStatusChanged(QStringLiteral("ENTER PIN IN SUNSHINE"));
+        }
         const QRegularExpression pinRegex(QStringLiteral("\\b(\\d{4})\\b"));
         const QRegularExpressionMatch match = pinRegex.match(m_pairOutput);
-        if (match.hasMatch())
+        if (match.hasMatch()) {
             emit pairCodeReady(match.captured(1));
+            emit pairStatusChanged(QStringLiteral("ENTER PIN IN SUNSHINE"));
+        }
+        if (lower.contains(QStringLiteral("successfully paired"))
+            || lower.contains(QStringLiteral("succesfully paired"))) {
+            emit pairStatusChanged(QStringLiteral("SUNSHINE PAIRED"));
+        }
     });
     connect(m_pairProcess,
             QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished),
@@ -379,6 +397,16 @@ void MoonlightBackend::pair_host(const QString &hostValue)
 
     qInfo("[MoonlightBackend] pairing Moonlight host: %s", qPrintable(cleanHost));
     m_pairProcess->start(bin, {QStringLiteral("pair"), cleanHost});
+    QTimer::singleShot(180000, this, [this, sessionId]() {
+        if (sessionId != m_pairSessionId || !m_pairProcess)
+            return;
+        if (m_pairProcess->state() == QProcess::NotRunning)
+            return;
+        m_pairTimedOut = true;
+        m_pairOutput.append(QStringLiteral("\nSUNSHINE PAIRING TIMED OUT\n"));
+        emit pairStatusChanged(QStringLiteral("PAIRING TIMED OUT"));
+        m_pairProcess->kill();
+    });
 }
 
 void MoonlightBackend::repair_host(const QString &hostValue)
@@ -399,6 +427,7 @@ void MoonlightBackend::cancel_pairing()
 {
     if (!m_pairProcess)
         return;
+    ++m_pairSessionId;
     if (m_pairProcess->state() != QProcess::NotRunning) {
         m_pairProcess->terminate();
         if (!m_pairProcess->waitForFinished(1200))
@@ -417,15 +446,20 @@ void MoonlightBackend::onPairProcessFinished(int exitCode, QProcess::ExitStatus 
 
     const bool ok = exitStatus == QProcess::NormalExit && exitCode == 0;
     if (ok) {
+        m_pairTimedOut = false;
         clearAppCache();
         emit authStateChanged();
         emit pairFinished(true, QStringLiteral("SUNSHINE PAIRED"));
         return;
     }
 
-    const QString message = m_pairOutput.trimmed().isEmpty()
-        ? QStringLiteral("SUNSHINE PAIRING FAILED")
-        : m_pairOutput.trimmed().split('\n', Qt::SkipEmptyParts).last().toUpper();
+    const QString output = m_pairOutput.trimmed();
+    const QString message = m_pairTimedOut
+        ? QStringLiteral("PAIRING TIMED OUT")
+        : (output.isEmpty()
+               ? QStringLiteral("SUNSHINE PAIRING FAILED")
+               : output.split('\n', Qt::SkipEmptyParts).last().toUpper());
+    m_pairTimedOut = false;
     emit pairFinished(false, message);
 }
 
