@@ -1,15 +1,15 @@
 {
-  "version": "v1.0.14",
-  "app_version": "1.0.14",
+  "version": "v1.0.15",
+  "app_version": "1.0.15",
   "channel": "main",
   "repo": "https://github.com/TaterTotterson/CRT-Station",
   "manifest_url": "https://raw.githubusercontent.com/TaterTotterson/CRT-Station/main/update-manifest.json",
-  "binary_archive": "https://github.com/TaterTotterson/CRT-Station/releases/download/v1.0.14/240-MP-v1.0.14-linux-arm64.tar.gz",
-  "source_archive": "https://github.com/TaterTotterson/CRT-Station/archive/refs/tags/v1.0.14.tar.gz",
+  "binary_archive": "https://github.com/TaterTotterson/CRT-Station/releases/download/v1.0.15/240-MP-v1.0.15-linux-arm64.tar.gz",
+  "source_archive": "https://github.com/TaterTotterson/CRT-Station/archive/refs/tags/v1.0.15.tar.gz",
   "notes": [
-    "Improves Gamepad pairing on fresh installs by using a per-command BlueZ pairing agent for controllers that use Just Works pairing.",
-    "Keeps Bluetooth in dual-mode with LE HID security upgrades enabled for XInput, Android, Switch, and similar controller modes.",
-    "Only reports a controller as connected after BlueZ says it stayed connected long enough to be usable.",
-    "Moves Gamepad pair, connect, and remove actions off the UI thread so Settings no longer freezes while Bluetooth is working."
+    "Fixes the generated Bluetooth control helper syntax error from v1.0.14 that made Gamepad settings show N/A.",
+    "Adds release-time syntax validation for generated Pi helper scripts so helper heredoc errors fail CI.",
+    "Keeps the improved BlueZ gamepad pairing flow for XInput, Android, Switch, 8BitDo-style, and generic HID controllers.",
+    "Keeps Gamepad pair, connect, and remove actions off the UI thread so Settings remains responsive while Bluetooth is working."
   ]
 }

@@ -18,6 +18,9 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4.2.2
 
+      - name: Validate generated helpers
+        run: bash scripts/check-generated-helpers.sh
+
       - name: Install build dependencies
         run: |
           sudo apt-get update
@@ -87,6 +90,9 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4.2.2
+
+      - name: Validate generated helpers
+        run: bash scripts/check-generated-helpers.sh
 
       - name: Build image
         env:

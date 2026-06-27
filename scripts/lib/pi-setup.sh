@@ -1956,7 +1956,7 @@ pair_device() {
             run_bluetoothctl_agent "$capability" pair "$mac" >/dev/null 2>&1 || true
         fi
         sleep 1
-    fi
+    done
 
     bluetoothctl scan off >/dev/null 2>&1 || true
     sleep 1
