@@ -1,15 +1,15 @@
 {
-  "version": "v1.0.13",
-  "app_version": "1.0.13",
+  "version": "v1.0.14",
+  "app_version": "1.0.14",
   "channel": "main",
   "repo": "https://github.com/TaterTotterson/CRT-Station",
   "manifest_url": "https://raw.githubusercontent.com/TaterTotterson/CRT-Station/main/update-manifest.json",
-  "binary_archive": "https://github.com/TaterTotterson/CRT-Station/releases/download/v1.0.13/240-MP-v1.0.13-linux-arm64.tar.gz",
-  "source_archive": "https://github.com/TaterTotterson/CRT-Station/archive/refs/tags/v1.0.13.tar.gz",
+  "binary_archive": "https://github.com/TaterTotterson/CRT-Station/releases/download/v1.0.14/240-MP-v1.0.14-linux-arm64.tar.gz",
+  "source_archive": "https://github.com/TaterTotterson/CRT-Station/archive/refs/tags/v1.0.14.tar.gz",
   "notes": [
-    "Fixes PC Link streaming on composite by selecting the Pi V3D DRM card for Moonlight SDL instead of the composite connector card.",
-    "Keeps the Moonlight DRM device override available through the systemd launch helper for troubleshooting unusual display layouts.",
-    "Improves first-run PC Link pairing feedback with live status messages after the PIN appears.",
-    "Adds a PC Link pairing timeout so a failed Sunshine handshake returns to setup instead of sitting forever."
+    "Improves Gamepad pairing on fresh installs by using a per-command BlueZ pairing agent for controllers that use Just Works pairing.",
+    "Keeps Bluetooth in dual-mode with LE HID security upgrades enabled for XInput, Android, Switch, and similar controller modes.",
+    "Only reports a controller as connected after BlueZ says it stayed connected long enough to be usable.",
+    "Moves Gamepad pair, connect, and remove actions off the UI thread so Settings no longer freezes while Bluetooth is working."
   ]
 }

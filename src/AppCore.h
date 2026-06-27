@@ -57,8 +57,11 @@ public:
     Q_INVOKABLE QVariantMap scanBluetoothDevices();
     Q_INVOKABLE void scanBluetoothDevicesAsync();
     Q_INVOKABLE QVariantMap pairBluetoothDevice(const QString &address);
+    Q_INVOKABLE void pairBluetoothDeviceAsync(const QString &address);
     Q_INVOKABLE QVariantMap connectBluetoothDevice(const QString &address);
+    Q_INVOKABLE void connectBluetoothDeviceAsync(const QString &address);
     Q_INVOKABLE QVariantMap forgetBluetoothDevice(const QString &address);
+    Q_INVOKABLE void forgetBluetoothDeviceAsync(const QString &address);
     Q_INVOKABLE QVariantMap getArgonFanInfo() const;
     Q_INVOKABLE QVariantMap setArgonFanMode(const QString &mode);
 
@@ -78,6 +81,7 @@ signals:
     void updateCheckFinished(const QVariantMap &result);
     void updateInstallFinished(const QVariantMap &result);
     void bluetoothScanFinished(const QVariantMap &result);
+    void bluetoothActionFinished(const QString &action, const QVariantMap &result);
 
 private slots:
     // Receive a backend's signal and re-emit it with the module ID prepended, recovering

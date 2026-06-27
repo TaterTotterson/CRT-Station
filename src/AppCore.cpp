@@ -196,7 +196,7 @@ QVariantMap parseBluetoothControlOutput(const QString &output)
     for (const QString &line : lines) {
         if (line.startsWith(QStringLiteral("device\t"))) {
             const QStringList parts = line.split('\t');
-            if (parts.size() < 6)
+            if (parts.size() < 7)
                 continue;
 
             const bool bonded = truthyValue(parts.value(6));
@@ -945,12 +945,51 @@ QVariantMap AppCore::pairBluetoothDevice(const QString &address) {
     return runBluetoothControl({QStringLiteral("pair-connect"), address.trimmed()}, 60000);
 }
 
+void AppCore::pairBluetoothDeviceAsync(const QString &address) {
+    const QString cleanAddress = address.trimmed();
+    auto *watcher = new QFutureWatcher<QVariantMap>(this);
+    connect(watcher, &QFutureWatcher<QVariantMap>::finished, this, [this, watcher]() {
+        const QVariantMap result = watcher->result();
+        watcher->deleteLater();
+        emit bluetoothActionFinished(QStringLiteral("pair-connect"), result);
+    });
+    watcher->setFuture(QtConcurrent::run([cleanAddress]() {
+        return runBluetoothControl({QStringLiteral("pair-connect"), cleanAddress}, 60000);
+    }));
+}
+
 QVariantMap AppCore::connectBluetoothDevice(const QString &address) {
     return runBluetoothControl({QStringLiteral("connect"), address.trimmed()}, 15000);
 }
 
+void AppCore::connectBluetoothDeviceAsync(const QString &address) {
+    const QString cleanAddress = address.trimmed();
+    auto *watcher = new QFutureWatcher<QVariantMap>(this);
+    connect(watcher, &QFutureWatcher<QVariantMap>::finished, this, [this, watcher]() {
+        const QVariantMap result = watcher->result();
+        watcher->deleteLater();
+        emit bluetoothActionFinished(QStringLiteral("connect"), result);
+    });
+    watcher->setFuture(QtConcurrent::run([cleanAddress]() {
+        return runBluetoothControl({QStringLiteral("connect"), cleanAddress}, 20000);
+    }));
+}
+
 QVariantMap AppCore::forgetBluetoothDevice(const QString &address) {
     return runBluetoothControl({QStringLiteral("forget"), address.trimmed()}, 15000);
+}
+
+void AppCore::forgetBluetoothDeviceAsync(const QString &address) {
+    const QString cleanAddress = address.trimmed();
+    auto *watcher = new QFutureWatcher<QVariantMap>(this);
+    connect(watcher, &QFutureWatcher<QVariantMap>::finished, this, [this, watcher]() {
+        const QVariantMap result = watcher->result();
+        watcher->deleteLater();
+        emit bluetoothActionFinished(QStringLiteral("forget"), result);
+    });
+    watcher->setFuture(QtConcurrent::run([cleanAddress]() {
+        return runBluetoothControl({QStringLiteral("forget"), cleanAddress}, 15000);
+    }));
 }
 
 QVariantMap AppCore::getArgonFanInfo() const {

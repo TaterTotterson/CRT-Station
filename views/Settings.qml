@@ -27,6 +27,10 @@ FocusScope {
     property var bluetoothDevices: []
     property var argonFanInfo: ({})
     property bool bluetoothScanning: false
+    property bool bluetoothBusy: false
+    property int bluetoothPendingIndex: -1
+    property string bluetoothPendingMode: ""
+    property string bluetoothStatusMessage: ""
     property string settingsMode: "main"
     property string activeSection: ""
     property int mainSettingsIndex: 0
@@ -223,6 +227,8 @@ FocusScope {
             enabled: !!bt.enabled,
             powered: !!bt.powered
         })
+        if (bluetoothStatusMessage.length > 0)
+            items.push({ type: "status", label: bluetoothStatusMessage, value: bluetoothBusy ? "..." : "" })
         items.push({ type: "section", label: "Paired Controllers:" })
         if (knownDevices.length === 0) {
             items.push({ type: "status", label: "No Paired Controllers", value: "" })
@@ -250,7 +256,7 @@ FocusScope {
             type: "action",
             action: "scan_bluetooth",
             label: "Scan Controllers",
-            value: bluetoothScanning ? "..." : (bt.available ? "OK" : "N/A")
+            value: (bluetoothScanning || bluetoothBusy) ? "..." : (bt.available ? "OK" : "N/A")
         })
         items.push({
             type: "action",
@@ -366,8 +372,12 @@ FocusScope {
         var items = []
         items.push({ type: "section", label: "Gamepad Scan:" })
 
-        if (bluetoothScanning) {
-            items.push({ type: "status", label: "Scanning Controllers", value: "..." })
+        if (bluetoothScanning || bluetoothBusy) {
+            items.push({
+                type: "status",
+                label: bluetoothStatusMessage.length > 0 ? bluetoothStatusMessage : "Scanning Controllers",
+                value: "..."
+            })
         } else {
             if (message && message.length > 0)
                 items.push({ type: "status", label: message, value: "" })
@@ -453,12 +463,13 @@ FocusScope {
     }
 
     function scanBluetooth(rowIndex) {
-        if (bluetoothScanning) return
+        if (bluetoothScanning || bluetoothBusy) return
 
         rememberSettingsIndex(rowIndex)
         settingsMode = "bluetooth_scan"
         activeSection = "bluetooth"
         bluetoothScanning = true
+        bluetoothStatusMessage = "Scanning Controllers"
         bluetoothDevices = []
         buildBluetoothScanModel("", 0)
         appCore.scanBluetoothDevicesAsync()
@@ -466,6 +477,7 @@ FocusScope {
 
     function finishBluetoothScan(result) {
         bluetoothScanning = false
+        bluetoothStatusMessage = ""
         bluetoothInfo = result
         bluetoothDevices = result.devices || []
         if (settingsMode === "bluetooth_scan") {
@@ -475,22 +487,41 @@ FocusScope {
         }
     }
 
-    function pairBluetooth(rowIndex, row) {
-        if (!row || !row.address) return
-
+    function beginBluetoothAction(rowIndex, message) {
+        bluetoothBusy = true
+        bluetoothPendingIndex = rowIndex
+        bluetoothPendingMode = settingsMode
+        bluetoothStatusMessage = message
         replaceSettingsRow(rowIndex, { value: "..." })
-        var result = appCore.pairBluetoothDevice(row.address)
+    }
+
+    function finishBluetoothAction(action, result) {
+        bluetoothBusy = false
         bluetoothInfo = result
         bluetoothDevices = result.devices || bluetoothDevices
-        if (settingsMode === "bluetooth_scan")
-            buildBluetoothScanModel(result.message || "CONTROLLER READY.", rowIndex)
+        bluetoothStatusMessage = result.message || ""
+
+        var rowIndex = bluetoothPendingIndex >= 0 ? bluetoothPendingIndex : 1
+        var wasScan = bluetoothPendingMode === "bluetooth_scan" || settingsMode === "bluetooth_scan"
+        bluetoothPendingIndex = -1
+        bluetoothPendingMode = ""
+
+        if (wasScan)
+            buildBluetoothScanModel(bluetoothStatusMessage, rowIndex)
         else
             buildSectionModel("bluetooth", rowIndex)
         selectSettingsIndex(rowIndex)
     }
 
+    function pairBluetooth(rowIndex, row) {
+        if (bluetoothBusy || bluetoothScanning || !row || !row.address) return
+
+        beginBluetoothAction(rowIndex, "Pairing Controller")
+        appCore.pairBluetoothDeviceAsync(row.address)
+    }
+
     function connectBluetooth(rowIndex, row) {
-        if (!row || !row.address) return
+        if (bluetoothBusy || bluetoothScanning || !row || !row.address) return
 
         if (row.connected) {
             if (settingsMode === "bluetooth_scan")
@@ -501,15 +532,8 @@ FocusScope {
             return
         }
 
-        replaceSettingsRow(rowIndex, { value: "..." })
-        var result = appCore.connectBluetoothDevice(row.address)
-        bluetoothInfo = result
-        bluetoothDevices = result.devices || bluetoothDevices
-        if (settingsMode === "bluetooth_scan")
-            buildBluetoothScanModel(result.message || "CONTROLLER CONNECTED.", rowIndex)
-        else
-            buildSectionModel("bluetooth", rowIndex)
-        selectSettingsIndex(rowIndex)
+        beginBluetoothAction(rowIndex, "Connecting Controller")
+        appCore.connectBluetoothDeviceAsync(row.address)
     }
 
     function activateBluetoothDevice(rowIndex, row) {
@@ -524,17 +548,10 @@ FocusScope {
     }
 
     function forgetBluetooth(rowIndex, row) {
-        if (!row || !row.address) return
+        if (bluetoothBusy || bluetoothScanning || !row || !row.address) return
 
-        replaceSettingsRow(rowIndex, { value: "..." })
-        var result = appCore.forgetBluetoothDevice(row.address)
-        bluetoothInfo = result
-        bluetoothDevices = result.devices || []
-        if (settingsMode === "bluetooth_scan")
-            buildBluetoothScanModel(result.message || "CONTROLLER FORGOTTEN.", rowIndex)
-        else
-            buildSectionModel("bluetooth", rowIndex)
-        selectSettingsIndex(rowIndex)
+        beginBluetoothAction(rowIndex, "Removing Controller")
+        appCore.forgetBluetoothDeviceAsync(row.address)
     }
 
     function setListSingleValue(rowIndex, row, newVal) {
@@ -657,6 +674,9 @@ FocusScope {
         function onBluetoothScanFinished(result) {
             settingsRoot.finishBluetoothScan(result)
         }
+        function onBluetoothActionFinished(action, result) {
+            settingsRoot.finishBluetoothAction(action, result)
+        }
     }
 
     // Header
@@ -759,6 +779,10 @@ FocusScope {
 
         Keys.onPressed: function(event) {
             if (event.key === Qt.Key_Escape || event.key === Qt.Key_Backspace || event.key === Qt.Key_Back) {
+                if (bluetoothScanning || bluetoothBusy) {
+                    event.accepted = true
+                    return
+                }
                 if (settingsMode === "bluetooth_scan")
                     settingsRoot.returnToSectionSettings()
                 else if (settingsMode === "section")

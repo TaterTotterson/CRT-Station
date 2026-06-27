@@ -1571,9 +1571,11 @@ pi240_configure_bluetooth_input() {
     pi240_set_bluetooth_main_option AlwaysPairable true General
     pi240_set_bluetooth_main_option FastConnectable true General
     pi240_set_bluetooth_main_option JustWorksRepairing always General
+    pi240_set_bluetooth_main_option ControllerMode dual General
     pi240_set_bluetooth_main_option AutoEnable true Policy
     pi240_set_bluetooth_input_option UserspaceHID true
     pi240_set_bluetooth_input_option ClassicBondedOnly false
+    pi240_set_bluetooth_input_option LEAutoSecurity true
     pi240_set_bluetooth_input_option ReconnectAttempts 7
     pi240_set_bluetooth_input_option ReconnectIntervals "1,2,4,8,16,32,64"
 }
@@ -1821,6 +1823,72 @@ configure_adapter_runtime() {
     bluetoothctl discoverable on >/dev/null 2>&1 || true
 }
 
+refresh_device_report() {
+    local seconds="${1:-4}"
+
+    case "$seconds" in
+        ''|*[!0-9]*) seconds=4 ;;
+    esac
+    if [ "$seconds" -lt 1 ]; then seconds=1; fi
+    if [ "$seconds" -gt 10 ]; then seconds=10; fi
+
+    bluetoothctl scan off >/dev/null 2>&1 || true
+    if command -v timeout >/dev/null 2>&1; then
+        bluetoothctl --timeout "$seconds" scan on >/dev/null 2>&1 || true
+    else
+        bluetoothctl scan on >/dev/null 2>&1 || true
+        sleep "$seconds"
+    fi
+}
+
+run_bluetoothctl_agent() {
+    local capability="$1"
+    shift
+    bluetoothctl --agent "$capability" "$@"
+}
+
+run_bluetoothctl_agent_timeout() {
+    local seconds="$1"
+    local capability="$2"
+    shift 2
+    bluetoothctl --agent "$capability" --timeout "$seconds" "$@"
+}
+
+device_services_resolved() {
+    local mac="$1"
+    local resolved
+
+    resolved="$(device_value "$mac" ServicesResolved)"
+    [ -z "$resolved" ] || truthy "$resolved"
+}
+
+device_ready() {
+    local mac="$1"
+    truthy "$(device_value "$mac" Connected)" && device_services_resolved "$mac"
+}
+
+wait_for_device_ready() {
+    local mac="$1"
+    local seconds="${2:-5}"
+    local stable="${3:-3}"
+    local deadline=$((SECONDS + seconds))
+    local seen=0
+
+    while [ "$SECONDS" -le "$deadline" ]; do
+        if device_ready "$mac"; then
+            seen=$((seen + 1))
+            if [ "$seen" -ge "$stable" ]; then
+                return 0
+            fi
+        else
+            seen=0
+        fi
+        sleep 1
+    done
+
+    return 1
+}
+
 connect_device() {
     local mac="$1"
     local seconds="${BLUETOOTH_CONNECT_TIMEOUT:-8}"
@@ -1832,20 +1900,27 @@ connect_device() {
     if [ "$seconds" -gt 20 ]; then seconds=20; fi
 
     if truthy "$(device_value "$mac" Connected)"; then
-        return 0
+        wait_for_device_ready "$mac" 4 2
+        return $?
     fi
 
+    refresh_device_report 4
     bluetoothctl trust "$mac" >/dev/null 2>&1 || true
     if command -v timeout >/dev/null 2>&1; then
-        timeout "$seconds" bluetoothctl connect "$mac" >/dev/null 2>&1
+        timeout "$seconds" bluetoothctl connect "$mac" >/dev/null 2>&1 || true
     else
-        bluetoothctl connect "$mac" >/dev/null 2>&1
+        bluetoothctl connect "$mac" >/dev/null 2>&1 || true
     fi
+    bluetoothctl scan off >/dev/null 2>&1 || true
+
+    wait_for_device_ready "$mac" 5 2
 }
 
 prepare_bluetooth_agent() {
-    bluetoothctl agent KeyboardDisplay >/dev/null 2>&1 || bluetoothctl agent on >/dev/null 2>&1 || true
-    bluetoothctl default-agent >/dev/null 2>&1 || true
+    run_bluetoothctl_agent NoInputNoOutput default-agent >/dev/null 2>&1 \
+        || run_bluetoothctl_agent KeyboardDisplay default-agent >/dev/null 2>&1 \
+        || bluetoothctl default-agent >/dev/null 2>&1 \
+        || true
 }
 
 device_paired_or_bonded() {
@@ -1856,6 +1931,7 @@ device_paired_or_bonded() {
 pair_device() {
     local mac="$1"
     local seconds="${BLUETOOTH_PAIR_TIMEOUT:-30}"
+    local capability
 
     case "$seconds" in
         ''|*[!0-9]*) seconds=30 ;;
@@ -1868,16 +1944,18 @@ pair_device() {
         sleep 1
     fi
 
-    bluetoothctl scan off >/dev/null 2>&1 || true
-    if command -v timeout >/dev/null 2>&1; then
-        bluetoothctl --timeout 8 scan on >/dev/null 2>&1 || true
-        bluetoothctl scan off >/dev/null 2>&1 || true
-        timeout "$seconds" bluetoothctl pair "$mac" >/dev/null 2>&1 || true
-    else
-        bluetoothctl scan on >/dev/null 2>&1 || true
-        sleep 8
-        bluetoothctl scan off >/dev/null 2>&1 || true
-        bluetoothctl pair "$mac" >/dev/null 2>&1 || true
+    refresh_device_report 8
+
+    for capability in NoInputNoOutput KeyboardDisplay; do
+        if device_paired_or_bonded "$mac"; then
+            break
+        fi
+        if command -v timeout >/dev/null 2>&1; then
+            run_bluetoothctl_agent_timeout "$seconds" "$capability" pair "$mac" >/dev/null 2>&1 || true
+        else
+            run_bluetoothctl_agent "$capability" pair "$mac" >/dev/null 2>&1 || true
+        fi
+        sleep 1
     fi
 
     bluetoothctl scan off >/dev/null 2>&1 || true
@@ -1986,6 +2064,10 @@ case "$action" in
             exit 2
         }
         enable_bluetooth
+        already_paired=0
+        if device_paired_or_bonded "$address"; then
+            already_paired=1
+        fi
         if ! pair_device "$address"; then
             echo "controller did not finish pairing; hold pairing mode and try again" >&2
             emit_status
@@ -1993,6 +2075,9 @@ case "$action" in
             exit 3
         fi
         if ! connect_device "$address"; then
+            if [ "$already_paired" -eq 0 ]; then
+                bluetoothctl remove "$address" >/dev/null 2>&1 || true
+            fi
             echo "controller paired but did not connect; turn it on and use connect" >&2
             emit_status
             emit_devices input
