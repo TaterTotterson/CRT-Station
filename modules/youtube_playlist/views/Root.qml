@@ -20,8 +20,11 @@ FocusScope {
     property var playlistRows: []
     property var currentPlaylist: ({})
     property var videos: []
+    property var videoRows: []
+    property var playbackVideos: []
     property int currentPlaylistIndex: 0
     property int currentVideoIndex: 0
+    property int playbackVideoIndex: 0
     property bool loadingPlaylist: false
     property bool addingPlaylist: false
     property bool stoppingPlayback: false
@@ -51,8 +54,25 @@ FocusScope {
             item.rowType = "playlist"
             rows.push(item)
         }
+        if (playlists.length > 0)
+            rows.push({ rowType: "refresh", title: "REFRESH ALL PLAYLISTS" })
         rows.push({ rowType: "add", title: "+ ADD PLAYLIST" })
         playlistRows = rows
+    }
+
+    function buildVideoRows() {
+        var rows = []
+        if (videos.length > 0)
+            rows.push({ rowType: "shuffle", title: "SHUFFLE PLAYLIST" })
+        for (var i = 0; i < videos.length; i++) {
+            var item = Object.assign({}, videos[i])
+            item.rowType = "video"
+            item.videoIndex = i
+            if (item.index === undefined || item.index === null)
+                item.index = i
+            rows.push(item)
+        }
+        videoRows = rows
     }
 
     function loadPlaylistLibrary(preferredIndex) {
@@ -179,6 +199,10 @@ FocusScope {
             showAdd("ADD PLAYLIST")
             return
         }
+        if (row.rowType === "refresh") {
+            refreshAllPlaylists()
+            return
+        }
 
         currentPlaylistIndex = index
         currentPlaylist = row
@@ -195,6 +219,17 @@ FocusScope {
         youtubePlaylistBackend.load_playlist(input)
     }
 
+    function refreshAllPlaylists() {
+        if (playlists.length === 0) {
+            mode = "message"
+            statusText = "NO PLAYLISTS SAVED"
+            return
+        }
+        youtubePlaylistBackend.refresh_playlist_cache()
+        mode = "message"
+        statusText = "PLAYLISTS WILL REFRESH"
+    }
+
     function refreshCurrentPlaylist() {
         if (!currentPlaylist || (!currentPlaylist.input && !currentPlaylist.url)) return
         loadingPlaylist = true
@@ -203,11 +238,27 @@ FocusScope {
         youtubePlaylistBackend.refresh_playlist(currentPlaylist.input || currentPlaylist.url)
     }
 
-    function playIndex(index) {
-        if (index < 0 || index >= videos.length) return
-        currentVideoIndex = index
-        videoList.currentIndex = index
-        var item = videos[index] || ({})
+    function videoIndexForItem(item, fallback) {
+        var raw = item ? item.index : undefined
+        if (typeof raw === "number" && !isNaN(raw))
+            return raw
+        var parsed = parseInt(raw)
+        return isNaN(parsed) ? fallback : parsed
+    }
+
+    function videoRowForVideoIndex(index) {
+        if (videoRows.length <= 1)
+            return 0
+        return Math.max(1, Math.min(videoRows.length - 1, index + 1))
+    }
+
+    function playPlaybackVideoIndex(index) {
+        if (index < 0 || index >= playbackVideos.length) return
+        playbackVideoIndex = index
+        var item = playbackVideos[index] || ({})
+        currentVideoIndex = Math.max(0, Math.min(videos.length - 1, videoIndexForItem(item, index)))
+        videoList.currentIndex = videoRowForVideoIndex(currentVideoIndex)
+
         var title = item.title || "VIDEO"
         statusText = "LOADING " + title
         mode = "playing"
@@ -217,10 +268,55 @@ FocusScope {
                                   "", false, "", false, title, false, true, format)
     }
 
+    function playIndex(index) {
+        if (index < 0 || index >= videos.length) return
+        playbackVideos = videos.slice()
+        playPlaybackVideoIndex(index)
+    }
+
+    function shuffleVideos() {
+        var shuffled = videos.slice()
+        for (var i = shuffled.length - 1; i > 0; i--) {
+            var j = Math.floor(Math.random() * (i + 1))
+            var tmp = shuffled[i]
+            shuffled[i] = shuffled[j]
+            shuffled[j] = tmp
+        }
+        return shuffled
+    }
+
+    function playShuffle() {
+        if (videos.length === 0) return
+        playbackVideos = shuffleVideos()
+        playPlaybackVideoIndex(0)
+    }
+
+    function selectVideoRow(index) {
+        if (index < 0 || index >= videoRows.length) return
+        var row = videoRows[index] || ({})
+        if (row.rowType === "shuffle") {
+            playShuffle()
+            return
+        }
+
+        var videoIndex = row.videoIndex
+        if (typeof videoIndex !== "number")
+            videoIndex = index - 1
+        playIndex(videoIndex)
+    }
+
+    function setVideoRowIndex(index) {
+        var next = Math.max(0, Math.min(videoList.count - 1, index))
+        videoList.currentIndex = next
+        var row = videoRows[next] || ({})
+        if (row.rowType === "video" && typeof row.videoIndex === "number")
+            currentVideoIndex = row.videoIndex
+    }
+
     function returnToVideoList() {
         mode = videos.length > 0 ? "list" : "message"
         if (videos.length > 0)
-            videoList.currentIndex = currentVideoIndex
+            setVideoRowIndex(videoRowForVideoIndex(currentVideoIndex))
     }
 
     function pageVideoList(direction) {
@@ -228,8 +324,7 @@ FocusScope {
         var rowHeight = root.sh * 0.0583333
         var rows = Math.max(1, Math.floor(videoList.height / rowHeight) - 1)
         var next = Math.max(0, Math.min(videoList.count - 1, videoList.currentIndex + direction * rows))
-        videoList.currentIndex = next
-        currentVideoIndex = next
+        setVideoRowIndex(next)
         videoList.positionViewAtIndex(next, ListView.Contain)
     }
 
@@ -269,12 +364,10 @@ FocusScope {
 
         if (mode === "list") {
             if (event.key === Qt.Key_Up) {
-                videoList.currentIndex = Math.max(0, videoList.currentIndex - 1)
-                currentVideoIndex = videoList.currentIndex
+                setVideoRowIndex(videoList.currentIndex - 1)
                 event.accepted = true
             } else if (event.key === Qt.Key_Down) {
-                videoList.currentIndex = Math.min(videoList.count - 1, videoList.currentIndex + 1)
-                currentVideoIndex = videoList.currentIndex
+                setVideoRowIndex(videoList.currentIndex + 1)
                 event.accepted = true
             } else if (event.key === Qt.Key_Left) {
                 pageVideoList(-1)
@@ -283,7 +376,7 @@ FocusScope {
                 pageVideoList(1)
                 event.accepted = true
             } else if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter || event.key === Qt.Key_Space) {
-                playIndex(videoList.currentIndex)
+                selectVideoRow(videoList.currentIndex)
                 event.accepted = true
             } else if (event.key === Qt.Key_Menu) {
                 refreshCurrentPlaylist()
@@ -363,6 +456,7 @@ FocusScope {
             playlistTitle = title || playlistTitle || "YOUTUBE PLAYLIST"
             updateCurrentPlaylistTitle(playlistTitle)
             videos = items || []
+            buildVideoRows()
             if (videos.length === 0) {
                 mode = "message"
                 statusText = "PLAYLIST HAS NO VIDEOS"
@@ -370,7 +464,7 @@ FocusScope {
             }
             mode = "list"
             currentVideoIndex = Math.min(currentVideoIndex, videos.length - 1)
-            videoList.currentIndex = currentVideoIndex
+            setVideoRowIndex(videoRowForVideoIndex(currentVideoIndex))
         }
 
         function onErrorOccurred(message) {
@@ -385,8 +479,8 @@ FocusScope {
 
         function onPlaybackFinishedNaturally(finalPositionMs, finalDurationMs) {
             if (mode !== "playing") return
-            if (autoplayNext() && currentVideoIndex + 1 < videos.length) {
-                playIndex(currentVideoIndex + 1)
+            if (autoplayNext() && playbackVideoIndex + 1 < playbackVideos.length) {
+                playPlaybackVideoIndex(playbackVideoIndex + 1)
                 return
             }
             returnToVideoList()
@@ -546,7 +640,7 @@ FocusScope {
     ListView {
         id: videoList
         visible: mode === "list"
-        model: videos
+        model: videoRows
         anchors.top: parent.top
         anchors.left: parent.left
         anchors.topMargin: root.sh * 0.25
@@ -568,7 +662,9 @@ FocusScope {
 
             Text {
                 id: videoText
-                text: (index + 1 < 10 ? "0" : "") + (index + 1) + "  " + (modelData.title || "VIDEO")
+                text: modelData.rowType === "shuffle"
+                      ? "SHUFFLE"
+                      : ((modelData.videoIndex + 1 < 10 ? "0" : "") + (modelData.videoIndex + 1) + "  " + (modelData.title || "VIDEO"))
                 color: videoList.currentIndex === index ? root.surfaceColor : root.primaryColor
                 font.family: root.globalFont
                 font.capitalization: Font.AllUppercase

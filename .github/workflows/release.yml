@@ -152,6 +152,7 @@ jobs:
           previous_tag="$(git describe --tags --abbrev=0 "${GITHUB_REF_NAME}^" 2>/dev/null || true)"
           app_assets=(artifacts/tarball-linux-arm64/240-MP-*-linux-arm64.tar.gz)
           image_assets=(artifacts/pi-image-*/image_*.img.xz)
+          release_highlights="$(python3 -c 'import json, pathlib; manifest=json.loads(pathlib.Path("update-manifest.json").read_text()); print("\n".join("- " + str(note).strip() for note in manifest.get("notes", []) if str(note).strip()))')"
 
           app_asset_name="$(basename "${app_assets[0]}")"
           download_base="https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}"
@@ -167,6 +168,12 @@ jobs:
           done
 
           {
+            if [ -n "$release_highlights" ]; then
+              echo "### Highlights"
+              echo
+              printf '%s\n' "$release_highlights"
+              echo
+            fi
             echo "### Downloads"
             echo
             echo "| Platform | File |"

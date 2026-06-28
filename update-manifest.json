@@ -1,14 +1,14 @@
 {
-  "version": "v1.1.1",
-  "app_version": "1.1.1",
+  "version": "v1.1.2",
+  "app_version": "1.1.2",
   "channel": "main",
   "repo": "https://github.com/TaterTotterson/CRT-Station",
   "manifest_url": "https://raw.githubusercontent.com/TaterTotterson/CRT-Station/main/update-manifest.json",
-  "binary_archive": "https://github.com/TaterTotterson/CRT-Station/releases/download/v1.1.1/240-MP-v1.1.1-linux-arm64.tar.gz",
-  "source_archive": "https://github.com/TaterTotterson/CRT-Station/archive/refs/tags/v1.1.1.tar.gz",
+  "binary_archive": "https://github.com/TaterTotterson/CRT-Station/releases/download/v1.1.2/240-MP-v1.1.2-linux-arm64.tar.gz",
+  "source_archive": "https://github.com/TaterTotterson/CRT-Station/archive/refs/tags/v1.1.2.tar.gz",
   "notes": [
-    "Fixes a Gamepad pairing regression where the post-pair input settle step could turn a successful pair into org.bluez.Error.Failed.",
-    "Keeps newly paired controllers trusted and connected even when their Linux input device appears only after a later reconnect.",
-    "Uses a best-effort HID profile attach instead of disconnecting controllers immediately after pairing."
+    "Adds a shuffle entry at the top of each Public Access playlist.",
+    "Autoplay-next now follows the shuffled Public Access playback order.",
+    "Adds a Refresh All Playlists entry above Add Playlist so updated YouTube playlist contents can be reloaded."
   ]
 }
