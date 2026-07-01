@@ -49,6 +49,10 @@ public:
     Q_INVOKABLE void load_children(const QString &ratingKey);
     Q_INVOKABLE void load_on_deck_for(const QString &ratingKey);
     Q_INVOKABLE void load_next_episode(const QString &currentRatingKey);
+    Q_INVOKABLE void load_vod_tv_channels(bool refresh);
+    Q_INVOKABLE void refresh_vod_tv_cache();
+    Q_INVOKABLE void prepare_vod_tv_stream(const QString &requestId,
+                                           const QVariantMap &item);
     Q_INVOKABLE void load_live_tv_channels();
     Q_INVOKABLE void request_live_tv_stream(const QString &channelId,
                                             const QString &sessionId,
@@ -110,6 +114,12 @@ signals:
     void childrenLoaded(const QVariant &items);
     void inProgressEpisodeLoaded(const QVariant &item);
     void nextEpisodeReady(const QVariant &detail);
+    void vodTvChannelsLoaded(const QVariant &channels);
+    void vodTvStreamReady(const QString &requestId,
+                          const QVariantMap &item,
+                          const QString &url,
+                          const QString &httpHeaderFields);
+    void vodTvStreamFailed(const QString &requestId, const QString &message);
     void liveTvChannelsLoaded(const QVariant &channels);
     void liveTvStreamReady(const QString &channelId,
                            const QString &url,
@@ -245,6 +255,20 @@ private:
                                 const QString &ratingKey);
     void apiPreparePlexShowPlayback(const QString &requestId,
                                     const QString &ratingKey);
+    QJsonObject vodTvCacheIdentity() const;
+    QString vodTvCachePath() const;
+    bool emitVodTvChannelsFromCache();
+    void saveVodTvChannelsCache(const QVariantList &channels) const;
+    void buildVodTvChannels(bool notifyRefresh);
+    void buildVodTvChannelsFromLibraries(const QVariantList &libraries,
+                                         bool notifyRefresh);
+    void fetchVodTvShowGroups(const QVariantList &shows,
+                              std::function<void(QVariantList)> callback);
+    void fetchPlexEpisodesForSeries(const QString &seriesId,
+                                    std::function<void(QVariantList)> callback);
+    void prepareVodTvDetailStream(const QString &requestId,
+                                  const QVariantMap &item,
+                                  const QVariantMap &detail);
     void fetchServerInfoThenFinishLogin(QJsonObject auth);
     void fetchEpisodesForSeries(const QString &seriesId,
                                 std::function<void(QJsonArray)> callback);

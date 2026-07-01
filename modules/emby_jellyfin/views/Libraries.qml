@@ -12,16 +12,27 @@ FocusScope {
     signal goBack()
 
     property var libraries: []
+    property var libraryRows: []
     property string serverName: ""
+
+    function rebuildRows() {
+        var rows = []
+        if (libraries.length > 0)
+            rows.push({ key: "vod_tv_mode", title: "TV MODE" })
+        for (var i = 0; i < libraries.length; i++)
+            rows.push(libraries[i])
+        libraryRows = rows
+    }
 
     Connections {
         target: embyBackend
 
         function onLibrariesLoaded(items) {
             browseRoot.libraries = items
-            if (items.length > 0) {
+            browseRoot.rebuildRows()
+            if (libraryRows.length > 0) {
                 var restore = (navListState.currentIndex !== undefined) ? navListState.currentIndex : 0
-                libraryList.currentIndex = Math.min(restore, items.length - 1)
+                libraryList.currentIndex = Math.min(restore, libraryRows.length - 1)
                 libraryList.positionViewAtIndex(libraryList.currentIndex, ListView.Contain)
             }
         }
@@ -56,7 +67,7 @@ FocusScope {
 
     // Loading Indicator
     Text {
-        visible: libraries.length === 0
+        visible: libraryRows.length === 0
         text: "LOADING..."
         color: root.tertiaryColor
         font.family: root.globalFont
@@ -67,7 +78,7 @@ FocusScope {
     // Body
     ListView {
         id: libraryList
-        model: libraries
+        model: libraryRows
         anchors.top: parent.top
         anchors.left: parent.left
         anchors.topMargin: root.sh * 0.25 //120
@@ -81,10 +92,12 @@ FocusScope {
         Keys.onDownPressed: if (currentIndex < count - 1) currentIndex++
 
         Keys.onReturnPressed: {
-            var lib = libraries[currentIndex]
+            var lib = libraryRows[currentIndex]
             if (!lib) return
 
-            if (lib.key === "continue_watching") {
+            if (lib.key === "vod_tv_mode") {
+                browseRoot.navigateTo("VodTvMenu.qml", {}, { currentIndex: libraryList.currentIndex })
+            } else if (lib.key === "continue_watching") {
                 browseRoot.navigateTo("Items.qml", {
                     listType: "continue_watching",
                     title: "CONTINUE WATCHING",

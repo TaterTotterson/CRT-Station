@@ -52,6 +52,13 @@
       "requires_auth": true
     },
     {
+      "key": "refresh_vod_tv_cache",
+      "label": "Refresh TV Channels",
+      "type": "action",
+      "action_slot": "refresh_vod_tv_cache",
+      "requires_auth": true
+    },
+    {
       "key": "logout",
       "label": "Sign out",
       "type": "action",

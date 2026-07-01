@@ -19,6 +19,7 @@ FocusScope {
     property var playlists: []
     property var commercialPlaylists: []
     property var playlistRows: []
+    property var tvMenuRows: []
     property var storePlaylists: [
         {
             title: "PUBLIC ACCESS STARTER",
@@ -36,6 +37,7 @@ FocusScope {
     property bool addingPlaylist: false
     property bool stoppingPlayback: false
     property string addPlaylistKind: "regular"
+    property string addReturnMode: "library"
     property string pendingPlaylistKind: "regular"
     property string pendingPlaylistInput: ""
     property bool tvModeActive: false
@@ -112,18 +114,19 @@ FocusScope {
             item.rowType = "playlist"
             rows.push(item)
         }
-        for (var j = 0; j < commercialPlaylists.length; j++) {
-            var commercial = Object.assign({}, commercialPlaylists[j])
-            commercial.rowType = "commercial"
-            commercial.title = "AD  " + (commercial.title || ("COMMERCIALS " + (j + 1)))
-            rows.push(commercial)
-        }
         if (playlists.length > 0 || commercialPlaylists.length > 0)
             rows.push({ rowType: "refresh", title: "REFRESH ALL PLAYLISTS" })
         rows.push({ rowType: "add", title: "+ ADD PLAYLIST" })
-        rows.push({ rowType: "add_commercial", title: "+ ADD COMMERCIAL PLAYLIST" })
         rows.push({ rowType: "store", title: "PLAYLIST STORE" })
         playlistRows = rows
+    }
+
+    function buildTvMenuRows() {
+        tvMenuRows = [
+            { rowType: "start", title: "START TV MODE" },
+            { rowType: "commercials", title: "COMMERCIALS " + (tvCommercialsEnabled() ? "ON" : "OFF") },
+            { rowType: "add_commercial", title: "+ ADD COMMERCIAL PLAYLIST" }
+        ]
     }
 
     function buildVideoRows() {
@@ -158,10 +161,25 @@ FocusScope {
         currentPlaylistIndex = libraryList.currentIndex
     }
 
-    function showAdd(message, kind) {
+    function showTvMenu() {
+        tvTuneTimer.stop()
+        cancelTvResolve()
+        tvModeActive = false
+        tvLoading = false
+        tvTuningStaticVisible = false
+        tvStoppingForTune = false
+        tvCurrentScheduleIndex = -1
+        loadCommercialPlaylists()
+        buildTvMenuRows()
+        mode = "tvmenu"
+        tvMenuList.currentIndex = Math.max(0, Math.min(tvMenuList.currentIndex, tvMenuRows.length - 1))
+    }
+
+    function showAdd(message, kind, returnMode) {
         mode = "add"
         addingPlaylist = false
         addPlaylistKind = kind || "regular"
+        addReturnMode = returnMode || "library"
         pendingPlaylistKind = addPlaylistKind
         pendingPlaylistInput = ""
         addLookupTimer.stop()
@@ -183,7 +201,10 @@ FocusScope {
         addingPlaylist = false
         pendingPlaylistInput = ""
         addLookupTimer.stop()
-        loadPlaylistLibrary(currentPlaylistIndex)
+        if (addReturnMode === "tvmenu")
+            showTvMenu()
+        else
+            loadPlaylistLibrary(currentPlaylistIndex)
     }
 
     function savePlaylistRows(nextPlaylists) {
@@ -268,7 +289,10 @@ FocusScope {
         for (var i = 0; i < targetPlaylists.length; i++) {
             if (targetPlaylists[i].url === info.url) {
                 statusText = "PLAYLIST ALREADY ADDED"
-                loadPlaylistLibrary(isCommercial ? playlists.length + i + 1 : i + 1)
+                if (isCommercial && addReturnMode === "tvmenu")
+                    showTvMenu()
+                else
+                    loadPlaylistLibrary(isCommercial ? playlists.length + i + 1 : i + 1)
                 return
             }
         }
@@ -291,22 +315,21 @@ FocusScope {
             return
         }
         statusText = isCommercial ? "COMMERCIAL PLAYLIST ADDED" : "PLAYLIST ADDED"
-        loadPlaylistLibrary(isCommercial ? playlists.length + next.length : next.length)
+        if (isCommercial && addReturnMode === "tvmenu")
+            showTvMenu()
+        else
+            loadPlaylistLibrary(isCommercial ? playlists.length + next.length : next.length)
     }
 
     function selectPlaylist(index) {
         if (index < 0 || index >= playlistRows.length) return
         var row = playlistRows[index] || ({})
         if (row.rowType === "tvmode") {
-            startTvMode()
+            showTvMenu()
             return
         }
         if (row.rowType === "add") {
             showAdd("ADD PLAYLIST")
-            return
-        }
-        if (row.rowType === "add_commercial") {
-            showAdd("ADD COMMERCIAL PLAYLIST", "commercial")
             return
         }
         if (row.rowType === "store") {
@@ -325,6 +348,24 @@ FocusScope {
                         ? (row.title || "COMMERCIALS")
                         : (row.title || "YOUTUBE PLAYLIST")
         loadPlaylist(playlistInput)
+    }
+
+    function toggleTvCommercials() {
+        appCore.save_setting(moduleId, "tv_mode_commercials",
+                             tvCommercialsEnabled() ? "OFF" : "ON")
+        buildTvMenuRows()
+    }
+
+    function selectTvMenu(index) {
+        if (index < 0 || index >= tvMenuRows.length) return
+        var row = tvMenuRows[index] || ({})
+        if (row.rowType === "start") {
+            startTvMode()
+        } else if (row.rowType === "commercials") {
+            toggleTvCommercials()
+        } else if (row.rowType === "add_commercial") {
+            showAdd("ADD COMMERCIAL PLAYLIST", "commercial", "tvmenu")
+        }
     }
 
     function loadPlaylist(input) {
@@ -852,6 +893,23 @@ FocusScope {
             return
         }
 
+        if (mode === "tvmenu") {
+            if (event.key === Qt.Key_Up) {
+                tvMenuList.currentIndex = Math.max(0, tvMenuList.currentIndex - 1)
+                event.accepted = true
+            } else if (event.key === Qt.Key_Down) {
+                tvMenuList.currentIndex = Math.min(tvMenuList.count - 1, tvMenuList.currentIndex + 1)
+                event.accepted = true
+            } else if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter || event.key === Qt.Key_Space) {
+                selectTvMenu(tvMenuList.currentIndex)
+                event.accepted = true
+            } else if (event.key === Qt.Key_Escape || event.key === Qt.Key_Backspace || event.key === Qt.Key_Back) {
+                loadPlaylistLibrary(currentPlaylistIndex)
+                event.accepted = true
+            }
+            return
+        }
+
         if (mode === "store") {
             if (event.key === Qt.Key_Up) {
                 storeList.currentIndex = Math.max(0, storeList.currentIndex - 1)
@@ -1118,7 +1176,9 @@ FocusScope {
         title: moduleName
         subtitle: mode === "list" ? playlistTitle
                   : (mode === "library" ? "PLAYLISTS"
+                     : (mode === "tvmenu" ? "TV MODE"
                      : (mode === "store" ? "STORE" : "PUBLIC"))
+                    )
         anchors.top: parent.top
         anchors.left: parent.left
         anchors.topMargin: root.sh * 0.125
@@ -1251,6 +1311,45 @@ FocusScope {
                 id: playlistText
                 text: modelData.title || "PLAYLIST"
                 color: libraryList.currentIndex === index ? root.surfaceColor : root.primaryColor
+                font.family: root.globalFont
+                font.capitalization: Font.AllUppercase
+                anchors.verticalCenter: parent.verticalCenter
+                width: parent.width
+                elide: Text.ElideRight
+                leftPadding: root.sw * 0.009375
+                rightPadding: root.sw * 0.009375
+                font.pixelSize: root.sh * 0.05
+            }
+        }
+    }
+
+    ListView {
+        id: tvMenuList
+        visible: mode === "tvmenu"
+        model: tvMenuRows
+        anchors.top: parent.top
+        anchors.left: parent.left
+        anchors.topMargin: root.sh * 0.25
+        anchors.leftMargin: root.sw * 0.115625
+        width: root.sw * 0.76875
+        height: root.sh * 0.525
+        clip: true
+        focus: visible
+
+        delegate: Item {
+            width: tvMenuList.width
+            height: root.sh * 0.0583333
+
+            Rectangle {
+                anchors.fill: tvMenuText
+                color: root.accentColor
+                visible: tvMenuList.currentIndex === index
+            }
+
+            Text {
+                id: tvMenuText
+                text: modelData.title || "TV MODE"
+                color: tvMenuList.currentIndex === index ? root.surfaceColor : root.primaryColor
                 font.family: root.globalFont
                 font.capitalization: Font.AllUppercase
                 anchors.verticalCenter: parent.verticalCenter

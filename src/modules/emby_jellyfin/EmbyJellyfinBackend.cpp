@@ -17,6 +17,8 @@
 #include <QUrlQuery>
 #include <QUuid>
 
+#include <memory>
+
 static const QString kModuleId = QStringLiteral("com.240mp.emby_jellyfin");
 static const QString kAuthFile = QStringLiteral("/emby_jellyfin_auth.json");
 static const QString kPlexAuthFile = QStringLiteral("/plex_auth.json");
@@ -219,6 +221,57 @@ QVariantMap firstPlayableEpisodeFromItems(const QVariantList &items) {
     if (!items.isEmpty())
         target = items.first().toMap();
     return target;
+}
+
+bool isVodMovieType(const QString &type) {
+    return type == QStringLiteral("movie") || type == QStringLiteral("video");
+}
+
+bool isVodShowType(const QString &type) {
+    return type == QStringLiteral("show");
+}
+
+bool isVodEpisodeType(const QString &type) {
+    return type == QStringLiteral("episode");
+}
+
+int episodeSortValue(const QVariantMap &item, const QString &key) {
+    return item.value(key).toInt();
+}
+
+void sortEpisodeList(QVariantList *episodes) {
+    if (!episodes)
+        return;
+    std::sort(episodes->begin(), episodes->end(),
+              [](const QVariant &a, const QVariant &b) {
+        const QVariantMap am = a.toMap();
+        const QVariantMap bm = b.toMap();
+        const int aSeason = episodeSortValue(am, QStringLiteral("parentIndex"));
+        const int bSeason = episodeSortValue(bm, QStringLiteral("parentIndex"));
+        if (aSeason != bSeason)
+            return aSeason < bSeason;
+        const int aEpisode = episodeSortValue(am, QStringLiteral("index"));
+        const int bEpisode = episodeSortValue(bm, QStringLiteral("index"));
+        if (aEpisode != bEpisode)
+            return aEpisode < bEpisode;
+        return am.value(QStringLiteral("title")).toString() <
+               bm.value(QStringLiteral("title")).toString();
+    });
+}
+
+QVariantMap vodProgramFromItem(QVariantMap item) {
+    item.remove(QStringLiteral("summary"));
+    return item;
+}
+
+QVariantMap vodChannel(const QString &title,
+                       const QString &channelType,
+                       const QVariantList &programs) {
+    return QVariantMap{
+        {QStringLiteral("title"), title.toUpper()},
+        {QStringLiteral("channelType"), channelType},
+        {QStringLiteral("programs"), programs}
+    };
 }
 }
 
@@ -3142,6 +3195,504 @@ void EmbyJellyfinBackend::load_next_episode(const QString &currentRatingKey) {
             }
             emit nextEpisodeReady(QVariantMap{});
         });
+    });
+}
+
+QJsonObject EmbyJellyfinBackend::vodTvCacheIdentity() const {
+    QJsonObject identity{
+        {QStringLiteral("provider"), mediaProvider()}
+    };
+    if (mediaProvider() == kProviderPlex) {
+        const QJsonObject auth = loadPlexAuth();
+        identity[QStringLiteral("server")] = plexServerUrl();
+        identity[QStringLiteral("machineIdentifier")] =
+            auth.value(QStringLiteral("machine_identifier")).toString();
+    } else {
+        identity[QStringLiteral("server")] = serverUrl();
+        identity[QStringLiteral("userId")] = userId();
+    }
+    return identity;
+}
+
+QString EmbyJellyfinBackend::vodTvCachePath() const {
+    return m_dataRoot + QStringLiteral("/vod_tv_cache.json");
+}
+
+bool EmbyJellyfinBackend::emitVodTvChannelsFromCache() {
+    QFile file(vodTvCachePath());
+    if (!file.open(QIODevice::ReadOnly))
+        return false;
+
+    QJsonParseError error;
+    const QJsonDocument doc = QJsonDocument::fromJson(file.readAll(), &error);
+    if (error.error != QJsonParseError::NoError || !doc.isObject())
+        return false;
+
+    const QJsonObject cache = doc.object();
+    if (cache.value(QStringLiteral("identity")).toObject() != vodTvCacheIdentity())
+        return false;
+
+    const QVariantList channels =
+        cache.value(QStringLiteral("channels")).toArray().toVariantList();
+    if (channels.isEmpty())
+        return false;
+
+    emit vodTvChannelsLoaded(channels);
+    return true;
+}
+
+void EmbyJellyfinBackend::saveVodTvChannelsCache(const QVariantList &channels) const {
+    QFile file(vodTvCachePath());
+    if (!file.open(QIODevice::WriteOnly)) {
+        qWarning("[EmbyJellyfinBackend] Could not write VoD TV cache: %s",
+                 qPrintable(file.errorString()));
+        return;
+    }
+
+    const QJsonObject cache{
+        {QStringLiteral("identity"), vodTvCacheIdentity()},
+        {QStringLiteral("updatedAt"), QDateTime::currentDateTimeUtc().toString(Qt::ISODate)},
+        {QStringLiteral("channels"), QJsonArray::fromVariantList(channels)}
+    };
+    file.write(QJsonDocument(cache).toJson(QJsonDocument::Indented));
+    file.setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner);
+}
+
+void EmbyJellyfinBackend::load_vod_tv_channels(bool refresh) {
+    if (get_auth_state() != QStringLiteral("authed")) {
+        emit errorOccurred(QStringLiteral("NOT SIGNED IN"));
+        emit vodTvChannelsLoaded(QVariantList{});
+        return;
+    }
+
+    if (!refresh && emitVodTvChannelsFromCache())
+        return;
+
+    buildVodTvChannels(false);
+}
+
+void EmbyJellyfinBackend::refresh_vod_tv_cache() {
+    if (get_auth_state() != QStringLiteral("authed")) {
+        emit errorOccurred(QStringLiteral("NOT SIGNED IN"));
+        return;
+    }
+    buildVodTvChannels(true);
+}
+
+void EmbyJellyfinBackend::buildVodTvChannels(bool notifyRefresh) {
+    const QJsonObject enabled = loadConfig()[QStringLiteral("modules")].toObject()
+        [kModuleId].toObject()[QStringLiteral("libraries")].toObject();
+
+    if (mediaProvider() == kProviderPlex) {
+        auto *reply = plexServerGet(plexApiUrl(QStringLiteral("/library/sections")));
+        connect(reply, &QNetworkReply::finished, this,
+                [this, reply, enabled, notifyRefresh]() {
+            reply->deleteLater();
+            if (reply->error() != QNetworkReply::NoError) {
+                emit errorOccurred(QStringLiteral("LOAD VOD TV LIBRARIES FAILED: ") +
+                                   reply->errorString());
+                emit vodTvChannelsLoaded(QVariantList{});
+                return;
+            }
+
+            QVariantList libraries = parsePlexLibraries(reply->readAll(), false);
+            if (!enabled.isEmpty()) {
+                QVariantList filtered;
+                for (const QVariant &value : libraries) {
+                    const QVariantMap lib = value.toMap();
+                    const QString id = lib.value(QStringLiteral("sectionId")).toString();
+                    if (enabled.value(id).toBool(true))
+                        filtered.append(lib);
+                }
+                libraries = filtered;
+            }
+            buildVodTvChannelsFromLibraries(libraries, notifyRefresh);
+        });
+        return;
+    }
+
+    auto *reply = apiGet(apiUrl(QStringLiteral("/Users/") + userId() +
+                                QStringLiteral("/Views")));
+    connect(reply, &QNetworkReply::finished, this,
+            [this, reply, enabled, notifyRefresh]() {
+        reply->deleteLater();
+        if (reply->error() != QNetworkReply::NoError) {
+            emit errorOccurred(QStringLiteral("LOAD VOD TV LIBRARIES FAILED: ") +
+                               reply->errorString());
+            emit vodTvChannelsLoaded(QVariantList{});
+            return;
+        }
+
+        static const QSet<QString> kVideoCollections = {
+            QStringLiteral("movies"),
+            QStringLiteral("tvshows"),
+            QStringLiteral("mixed"),
+            QStringLiteral("homevideos"),
+            QStringLiteral("boxsets")
+        };
+
+        QVariantList libraries;
+        const QJsonArray views = QJsonDocument::fromJson(reply->readAll())
+            .object()[QStringLiteral("Items")].toArray();
+        for (const QJsonValue &value : views) {
+            const QJsonObject view = value.toObject();
+            const QString id = view.value(QStringLiteral("Id")).toString();
+            const QString collectionType =
+                view.value(QStringLiteral("CollectionType")).toString();
+            const QString type = view.value(QStringLiteral("Type")).toString();
+            if (id.isEmpty())
+                continue;
+            if (!collectionType.isEmpty() && !kVideoCollections.contains(collectionType))
+                continue;
+            if (collectionType.isEmpty() && type != QStringLiteral("CollectionFolder"))
+                continue;
+            if (!enabled.isEmpty() && !enabled.value(id).toBool(true))
+                continue;
+
+            libraries.append(QVariantMap{
+                {QStringLiteral("key"), id},
+                {QStringLiteral("title"), view.value(QStringLiteral("Name")).toString().toUpper()},
+                {QStringLiteral("sectionId"), id},
+                {QStringLiteral("sectionType"), collectionType.isEmpty()
+                    ? QStringLiteral("mixed")
+                    : collectionType}
+            });
+        }
+
+        buildVodTvChannelsFromLibraries(libraries, notifyRefresh);
+    });
+}
+
+void EmbyJellyfinBackend::buildVodTvChannelsFromLibraries(const QVariantList &libraries,
+                                                          bool notifyRefresh) {
+    auto channels = std::make_shared<QVariantList>();
+    auto index = std::make_shared<int>(0);
+    auto processNext = std::make_shared<std::function<void()>>();
+
+    *processNext = [this, libraries, notifyRefresh, channels, index, processNext]() {
+        if (*index >= libraries.size()) {
+            saveVodTvChannelsCache(*channels);
+            if (notifyRefresh)
+                qInfo("[EmbyJellyfinBackend] VoD TV cache refreshed with %d channels",
+                      int(channels->size()));
+            emit vodTvChannelsLoaded(*channels);
+            return;
+        }
+
+        const QVariantMap lib = libraries.at(*index).toMap();
+        const QString sectionId = lib.value(QStringLiteral("sectionId")).toString();
+        if (sectionId.isEmpty()) {
+            ++(*index);
+            (*processNext)();
+            return;
+        }
+
+        const auto finishItems = [this, lib, channels, index, processNext]
+                                 (const QVariantList &items) {
+            QVariantList movies;
+            QVariantList shows;
+            for (const QVariant &value : items) {
+                const QVariantMap item = value.toMap();
+                const QString ratingKey =
+                    item.value(QStringLiteral("ratingKey")).toString();
+                const QString type = item.value(QStringLiteral("type")).toString();
+                if (ratingKey.isEmpty())
+                    continue;
+                if (isVodMovieType(type)) {
+                    movies.append(vodProgramFromItem(item));
+                } else if (isVodShowType(type)) {
+                    shows.append(vodProgramFromItem(item));
+                }
+            }
+
+            const auto finishLibrary = [lib, movies, channels, index, processNext]
+                                       (const QVariantList &showGroups) {
+                const QString title =
+                    lib.value(QStringLiteral("title")).toString().toUpper();
+                const bool hasMovies = !movies.isEmpty();
+                const bool hasShows = !showGroups.isEmpty();
+
+                if (hasMovies) {
+                    QString movieTitle = title;
+                    if (hasShows)
+                        movieTitle += QStringLiteral(" MOVIES");
+                    channels->append(vodChannel(movieTitle, QStringLiteral("movie"), movies));
+                }
+                if (hasShows) {
+                    QString tvTitle = title;
+                    if (hasMovies)
+                        tvTitle += QStringLiteral(" TV");
+                    channels->append(vodChannel(tvTitle, QStringLiteral("tv"), showGroups));
+                }
+
+                ++(*index);
+                (*processNext)();
+            };
+
+            if (shows.isEmpty()) {
+                finishLibrary(QVariantList{});
+                return;
+            }
+            fetchVodTvShowGroups(shows, finishLibrary);
+        };
+
+        if (mediaProvider() == kProviderPlex) {
+            auto *reply = plexServerGet(plexApiUrl(
+                QStringLiteral("/library/sections/%1/all").arg(sectionId)));
+            connect(reply, &QNetworkReply::finished, this,
+                    [this, reply, finishItems, index, processNext]() {
+                reply->deleteLater();
+                if (reply->error() != QNetworkReply::NoError) {
+                    qWarning("[EmbyJellyfinBackend] LOAD VOD TV ITEMS FAILED: %s",
+                             qPrintable(reply->errorString()));
+                    ++(*index);
+                    (*processNext)();
+                    return;
+                }
+                finishItems(parsePlexItems(reply->readAll()));
+            });
+            return;
+        }
+
+        auto *reply = apiGet(itemListUrl(sectionId,
+                                         QStringLiteral("Movie,Series,Video"),
+                                         true));
+        connect(reply, &QNetworkReply::finished, this,
+                [this, reply, finishItems, index, processNext]() {
+            reply->deleteLater();
+            if (reply->error() != QNetworkReply::NoError) {
+                qWarning("[EmbyJellyfinBackend] LOAD VOD TV ITEMS FAILED: %s",
+                         qPrintable(reply->errorString()));
+                ++(*index);
+                (*processNext)();
+                return;
+            }
+            const QJsonArray items = QJsonDocument::fromJson(reply->readAll())
+                .object()[QStringLiteral("Items")].toArray();
+            finishItems(formatItems(items));
+        });
+    };
+
+    (*processNext)();
+}
+
+void EmbyJellyfinBackend::fetchVodTvShowGroups(
+    const QVariantList &shows,
+    std::function<void(QVariantList)> callback) {
+    auto groups = std::make_shared<QVariantList>();
+    auto index = std::make_shared<int>(0);
+    auto processNext = std::make_shared<std::function<void()>>();
+
+    *processNext = [this, shows, groups, index, processNext, callback]() {
+        if (*index >= shows.size()) {
+            callback(*groups);
+            return;
+        }
+
+        const QVariantMap show = shows.at(*index).toMap();
+        const QString seriesId = show.value(QStringLiteral("ratingKey")).toString();
+        if (seriesId.isEmpty()) {
+            ++(*index);
+            (*processNext)();
+            return;
+        }
+
+        const auto finishEpisodes = [show, seriesId, groups, index, processNext]
+                                    (QVariantList episodes) {
+            QVariantList playableEpisodes;
+            for (const QVariant &value : episodes) {
+                QVariantMap episode = value.toMap();
+                if (episode.value(QStringLiteral("ratingKey")).toString().isEmpty())
+                    continue;
+                if (!isVodEpisodeType(episode.value(QStringLiteral("type")).toString()))
+                    continue;
+                playableEpisodes.append(vodProgramFromItem(episode));
+            }
+            sortEpisodeList(&playableEpisodes);
+
+            if (!playableEpisodes.isEmpty()) {
+                groups->append(QVariantMap{
+                    {QStringLiteral("type"), QStringLiteral("series")},
+                    {QStringLiteral("title"), show.value(QStringLiteral("title")).toString()},
+                    {QStringLiteral("seriesKey"), seriesId},
+                    {QStringLiteral("episodes"), playableEpisodes}
+                });
+            }
+
+            ++(*index);
+            (*processNext)();
+        };
+
+        if (mediaProvider() == kProviderPlex) {
+            fetchPlexEpisodesForSeries(seriesId, finishEpisodes);
+        } else {
+            fetchEpisodesForSeries(seriesId, [this, finishEpisodes](QJsonArray episodes) {
+                finishEpisodes(formatItems(episodes));
+            });
+        }
+    };
+
+    (*processNext)();
+}
+
+void EmbyJellyfinBackend::fetchPlexEpisodesForSeries(
+    const QString &seriesId,
+    std::function<void(QVariantList)> callback) {
+    auto *reply = plexServerGet(plexApiUrl(
+        QStringLiteral("/library/metadata/%1/allLeaves").arg(seriesId)));
+    connect(reply, &QNetworkReply::finished, this,
+            [this, reply, callback]() {
+        reply->deleteLater();
+        if (reply->error() != QNetworkReply::NoError) {
+            callback(QVariantList{});
+            return;
+        }
+
+        QVariantList episodes = parsePlexItems(reply->readAll());
+        sortEpisodeList(&episodes);
+        callback(episodes);
+    });
+}
+
+void EmbyJellyfinBackend::prepare_vod_tv_stream(const QString &requestId,
+                                                const QVariantMap &item) {
+    const QString ratingKey = item.value(QStringLiteral("ratingKey")).toString();
+    if (requestId.isEmpty() || ratingKey.isEmpty()) {
+        emit vodTvStreamFailed(requestId,
+                               QStringLiteral("VOD TV PLAYBACK FAILED: EMPTY ITEM"));
+        return;
+    }
+
+    if (mediaProvider() == kProviderPlex) {
+        auto *reply = plexServerGet(plexApiUrl(
+            QStringLiteral("/library/metadata/%1").arg(ratingKey)));
+        connect(reply, &QNetworkReply::finished, this,
+                [this, reply, requestId, item]() {
+            reply->deleteLater();
+            if (reply->error() != QNetworkReply::NoError) {
+                emit vodTvStreamFailed(requestId,
+                                       QStringLiteral("LOAD PLEX ITEM FAILED: ") +
+                                       reply->errorString());
+                return;
+            }
+            prepareVodTvDetailStream(requestId, item, parsePlexDetail(reply->readAll()));
+        });
+        return;
+    }
+
+    QUrl url = apiUrl(QStringLiteral("/Users/") + userId() +
+                      QStringLiteral("/Items/") + ratingKey);
+    QUrlQuery q;
+    q.addQueryItem(QStringLiteral("Fields"),
+                   QStringLiteral("MediaSources,MediaStreams,Overview,Genres,ParentId,UserData"));
+    url.setQuery(q);
+
+    auto *reply = apiGet(url);
+    connect(reply, &QNetworkReply::finished, this,
+            [this, reply, requestId, item]() {
+        reply->deleteLater();
+        if (reply->error() != QNetworkReply::NoError) {
+            emit vodTvStreamFailed(requestId,
+                                   QStringLiteral("LOAD MEDIA ITEM FAILED: ") +
+                                   reply->errorString());
+            return;
+        }
+        prepareVodTvDetailStream(
+            requestId,
+            item,
+            buildItemDetail(QJsonDocument::fromJson(reply->readAll()).object()));
+    });
+}
+
+void EmbyJellyfinBackend::prepareVodTvDetailStream(const QString &requestId,
+                                                   const QVariantMap &item,
+                                                   const QVariantMap &detail) {
+    const QString ratingKey = detail.value(QStringLiteral("ratingKey")).toString();
+    const QString partKey = detail.value(QStringLiteral("partKey")).toString();
+    if (ratingKey.isEmpty() || partKey.isEmpty()) {
+        emit vodTvStreamFailed(requestId,
+                               QStringLiteral("VOD TV PLAYBACK FAILED: NO PLAYABLE STREAM"));
+        return;
+    }
+
+    QVariantMap playbackItem = item;
+    playbackItem[QStringLiteral("title")] =
+        detail.value(QStringLiteral("title"),
+                     item.value(QStringLiteral("title")));
+    playbackItem[QStringLiteral("type")] =
+        detail.value(QStringLiteral("type"),
+                     item.value(QStringLiteral("type")));
+    if (detail.contains(QStringLiteral("grandparentTitle")))
+        playbackItem[QStringLiteral("grandparentTitle")] =
+            detail.value(QStringLiteral("grandparentTitle"));
+
+    const QString sessionId = QUuid::createUuid().toString(QUuid::WithoutBraces);
+    const QString audioId = detail.value(QStringLiteral("selectedAudioId")).toString();
+
+    if (mediaProvider() == kProviderPlex) {
+        plexRequestTranscodeUrl(ratingKey, partKey, sessionId, audioId, {}, 0,
+                                [this, requestId, playbackItem]
+                                (const QString &url,
+                                 const QString &httpHeaderFields) {
+            emit vodTvStreamReady(requestId, playbackItem, url, httpHeaderFields);
+        }, [this, requestId](const QString &message) {
+            emit vodTvStreamFailed(requestId, message);
+        });
+        return;
+    }
+
+    const bool forceTranscode =
+        detail.value(QStringLiteral("forceTranscode"), true).toBool();
+    const QJsonObject payload = playbackInfoPayload(partKey, audioId, {}, 0,
+                                                    forceTranscode);
+    auto *reply = apiPostJson(apiUrl(QStringLiteral("/Items/") + ratingKey +
+                                     QStringLiteral("/PlaybackInfo")),
+                              QJsonDocument(payload).toJson(QJsonDocument::Compact));
+    connect(reply, &QNetworkReply::finished, this,
+            [this, reply, requestId, playbackItem, ratingKey, partKey, sessionId,
+             audioId, forceTranscode]() {
+        reply->deleteLater();
+        const QByteArray bytes = reply->readAll();
+        if (reply->error() != QNetworkReply::NoError) {
+            QString message = QStringLiteral("PLAYBACK INFO FAILED: ") +
+                              reply->errorString();
+            const QString body = abbreviatedNetworkBody(bytes);
+            if (!body.isEmpty())
+                message += QStringLiteral(" - ") + body;
+            emit vodTvStreamFailed(requestId, message);
+            return;
+        }
+
+        QJsonParseError parseError;
+        const QJsonDocument doc = QJsonDocument::fromJson(bytes, &parseError);
+        if (parseError.error != QJsonParseError::NoError || !doc.isObject()) {
+            emit vodTvStreamFailed(
+                requestId,
+                QStringLiteral("PLAYBACK INFO FAILED: INVALID SERVER RESPONSE"));
+            return;
+        }
+
+        const QJsonObject info = doc.object();
+        const QString errorCode = info.value(QStringLiteral("ErrorCode")).toString();
+        if (!errorCode.isEmpty()) {
+            emit vodTvStreamFailed(requestId,
+                                   QStringLiteral("PLAYBACK INFO FAILED: ") + errorCode);
+            return;
+        }
+
+        QJsonObject mediaSource;
+        const QString url = playbackUrlFromInfo(info, ratingKey, partKey, sessionId,
+                                                audioId, {}, forceTranscode,
+                                                &mediaSource);
+        if (url.isEmpty()) {
+            emit vodTvStreamFailed(
+                requestId,
+                QStringLiteral("PLAYBACK INFO FAILED: NO PLAYABLE STREAM"));
+            return;
+        }
+
+        emit vodTvStreamReady(requestId, playbackItem, url,
+                              httpHeaderFieldsFor(mediaSource));
     });
 }
 
